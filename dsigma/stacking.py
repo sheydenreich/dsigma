@@ -341,7 +341,7 @@ def tangential_shear(table_l, table_r=None, boost_correction=False,
     return_table : boolean, optional
         If True, return a table with many intermediate steps of the
         computation. Otherwise, a simple array with just the final tangential
-        shearis returned. Default is False.
+        shear is returned. Default is False.
 
     Returns
     -------
