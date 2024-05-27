@@ -12,7 +12,8 @@ from .helpers import spherical_to_cartesian
 
 
 __all__ = ["compute_jackknife_fields", "compress_jackknife_fields",
-           "smooth_correlation_matrix", "jackknife_resampling"]
+           "smooth_correlation_matrix", "jackknife_resampling",
+           "jackknife_resampling_cross_covariance"]
 
 
 def compute_jackknife_fields(table, centers, distance_threshold=1,
@@ -235,4 +236,67 @@ def jackknife_resampling(f, table_l, table_r=None, table_l_2=None,
         samples.append(f(table_l[mask_l], **kwargs))
 
     return ((len(np.unique(table_l['field_jk'])) - 1) *
+            np.cov(np.array(samples), rowvar=False, ddof=0))
+
+def jackknife_resampling_cross_covariance(f, tables_l, tables_r=None, **kwargs):
+    """Compute the covariance of a function from jackknife re-sampling.
+
+    Parameters
+    ----------
+    f : function
+        Function that returns a result for which we want to have uncertainties.
+        The function must take exactly one positional argument, the lens table.
+        Additionally, it can have several additional keyword arguments.
+    table_l : astropy.table.Table
+        Precompute results for the lenses. The catalog must have jackknife
+        regions assigned to it.
+    table_r : optional, astropy.table.Table, optional
+        Precompute results for random lenses. The input function must accept
+        the random lens table via the `table_r` keyword argument. Default
+        is None.
+    table_l_2 : optional, astropy.table.Table
+        Precompute results for a second set of lenses.The input function must
+        accept the second lens table via the `table_l_2` keyword argument.
+        Default is None.
+    table_r_2 : optional, astropy.table.Table, optional
+        Precompute results for a second set of random lenses. The input
+        function must accept the second random lens table via the `table_r_2`
+        keyword argument. Default is None.
+    kwargs : dict, optional
+        Additional keyword arguments to be passed to the function.
+
+    Returns
+    -------
+    cov : numpy.ndarray
+        Covariance matrix of the result derived from jackknife re-sampling.
+
+    """
+
+    all_jackknife_regions = []
+    for tab_l in tables_l:
+        all_jackknife_regions.extend(tab_l['field_jk'])
+    jackknife_regions = np.unique(all_jackknife_regions)
+    n_radial_bins = len(tables_l[0].meta['bins'])-1
+    samples = np.zeros((len(jackknife_regions),len(tables_l)*n_radial_bins))
+
+    for idx_jk,field_jk in enumerate(jackknife_regions):
+        jk_samples = np.zeros(len(tables_l)*n_radial_bins)
+        for table_idx in range(len(tables_l)):
+            # if not np.all(np.sort(np.unique(tables_l[table_idx]['field_jk'])) == np.sort(jackknife_regions)):
+            #     print("Different number of jackknife regions in tables_l")
+            #     # print(jackknife_regions, np.unique(tables_l[table_idx]['field_jk']))
+            #     print(len(jackknife_regions), len(np.unique(tables_l[table_idx]['field_jk'])))
+            #     print(set(np.arange(101))-set(np.unique(tables_l[table_idx]['field_jk'])))
+            #     print(set(np.arange(101))-set(jackknife_regions))
+            #     raise ValueError("Different number of jackknife regions in tables_l")
+            mask_l = tables_l[table_idx]['field_jk'] != field_jk
+            if tables_r is not None:
+                kwargs['table_r'] = tables_r[table_idx][tables_r[table_idx]['field_jk'] != field_jk]
+            # print(jk_samples.shape, f(tables_l[table_idx][mask_l], **kwargs).shape, table_)
+
+            jk_samples[table_idx*n_radial_bins:(table_idx+1)*n_radial_bins] = f(tables_l[table_idx][mask_l], **kwargs)
+
+        samples[idx_jk,:] = jk_samples
+
+    return ((len(jackknife_regions) - 1) * 
             np.cov(np.array(samples), rowvar=False, ddof=0))
