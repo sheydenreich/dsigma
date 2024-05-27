@@ -4,16 +4,24 @@ Notable changes to dsigma will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0] - 2024-05-26
+
+### Added
+- added `dsigma.stacking.mean_critical_surface_density`
 
 ### Changed
 - photometric redshift correction now always applied when computing the mean source redshift
+- `dsigma.stacking.lens_magnification_bias` now uses `dsigma.stacking.mean_critical_surface_density` to estimate the critical surface density and not calculate it based on the mean lens and source redshift
+- `dsigma.physics.lens_magnification_shear_bias` can now use angles expressed with `astropy` units
 
 ## [0.7.2] - 2023-06-02
 
-### Changed
+### Added
 
 - `dsigma.stacking.lens_magnification_bias` can now be used to compute the bias in the tangential shear
+
+### Changed
+
 - mean source redshift now takes into account n(z)'s passed to `dsigma.precompute.precompute`
 
 ### Fixed
