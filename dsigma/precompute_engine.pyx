@@ -87,6 +87,25 @@ def precompute_engine(
         R_21 = table_s['R_21']
         R_22 = table_s['R_22']
 
+    cdef bint has_c = ('c_1' in table_s.keys() and 'c_2' in table_s.keys())
+    cdef double[::1] c_1
+    cdef double[::1] c_2
+    if has_c:
+        c_1 = table_s['c_1']
+        c_2 = table_s['c_2']
+
+    cdef bint has_A = 'magA' in table_s.keys()
+    cdef double[::1] aperture_mag
+    if has_A:
+        magA10 = table_s['magA']
+
+    cdef bint has_e_psf = ('e_psf_1' in table_s.keys() and 'e_psf_2' in table_s.keys())
+    cdef double[::1] e_psf_1
+    cdef double[::1] e_psf_2
+    if has_e_psf:
+        e_psf_1 = table_s['e_psf_1']
+        e_psf_2 = table_s['e_psf_2']
+
     cdef double[::1] dist_3d_sq_bins = dist_3d_sq_bins_in
 
     cdef long[::1] sum_1 = table_r['sum 1']
@@ -101,12 +120,26 @@ def precompute_engine(
     cdef double[::1] sum_w_ls_1_minus_e_rms_sq
     if has_e_rms:
         sum_w_ls_1_minus_e_rms_sq = table_r['sum w_ls (1 - e_rms^2)']
-    cdef double[::1] sum_w_ls_A_p_R_2
+    cdef double[::1] sum_w_ls_p_R_2
     if has_R_2:
-        sum_w_ls_A_p_R_2 = table_r['sum w_ls A p(R_2=0.3)']
+        sum_w_ls_p_R_2 = table_r['sum w_ls p(R_2=0.3)']
+    cdef double[::1] sum_w_ls_p_A
+    if has_A:
+        sum_w_ls_p_A = table_r['sum w_ls p(A=25.5)']
     cdef double[::1] sum_w_ls_R_T
     if has_R_matrix:
         sum_w_ls_R_T = table_r['sum w_ls R_T']
+    cdef double[::1] sum_w_ls_c
+    if has_c:
+        sum_w_ls_c = table_r['sum w_ls c']
+        sum_w_ls_sigma_crit_c = table_r['sum w_ls sigma_crit c']
+    cdef double[::1] sum_w_ls_e_psf
+    cdef double[::1] sum_w_ls_e_psf_sigma_crit
+    if has_e_psf:
+        sum_w_ls_e_psf = table_r['sum w_ls e_psf']
+        sum_w_ls_e_psf_sigma_crit = table_r['sum w_ls sigma_crit e_psf']
+
+    
 
     hp = HEALPix(nside, order='ring')
     lon, lat = hp.healpix_to_lonlat(np.arange(hp.npix))
@@ -257,14 +290,24 @@ def precompute_engine(
                     if has_e_rms:
                         sum_w_ls_1_minus_e_rms_sq[offset_result + i_bin] += (
                             w_ls * (1 - e_rms[i_s] * e_rms[i_s]))
-                    if has_R_2 and R_2[i_s] <= 0.31:
-                        sum_w_ls_A_p_R_2[offset_result + i_bin] += (
-                            0.00865 * w_ls / 0.01)
+                    if has_R_2 and R_2[i_s] <= 0.31: #0.3+0.01
+                        sum_w_ls_p_R_2[offset_result + i_bin] += (
+                            w_ls / 0.01)
+                    if has_A and magA10[i_s] >= 25.475: #25.5-0.025
+                        sum_w_ls_p_A[offset_result + i_bin] += w_ls / 0.025
                     if has_R_matrix:
                         sum_w_ls_R_T[offset_result + i_bin] += w_ls * (
                             R_11[i_s] * cos_2phi * cos_2phi +
                             R_22[i_s] * sin_2phi * sin_2phi +
                             (R_12[i_s] + R_21[i_s]) * sin_2phi * cos_2phi)
+                    if has_c:
+                        c_t = - c_1[i_s] * cos_2phi + c_2[i_s] * sin_2phi
+                        sum_w_ls_c[offset_result + i_bin] += w_ls * c_t
+                        sum_w_ls_sigma_crit_c[offset_result + i_bin] += w_ls * sigma_crit * c_t
+                    if has_e_psf:
+                        e_psf_t = - e_psf_1[i_s] * cos_2phi + e_psf_2[i_s] * sin_2phi
+                        sum_w_ls_e_psf[offset_result + i_bin] += w_ls * e_psf_t
+                        sum_w_ls_e_psf_sigma_crit[offset_result + i_bin] += w_ls * sigma_crit * e_psf_t
 
         if progress_bar:
             pbar.update(pix_l + 1 - pbar.n)

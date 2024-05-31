@@ -312,6 +312,8 @@ def tangential_shear(table_l, table_r=None, boost_correction=False,
                      matrix_shear_response_correction=False,
                      shear_responsivity_correction=False,
                      hsc_selection_bias_correction=False,
+                     hsc_additive_shear_bias_correction=False,
+                     hsc_y3_selection_bias_correction=False,
                      random_subtraction=False, return_table=False):
     """Compute the mean tangential shear with corrections, if applicable.
 
@@ -369,6 +371,14 @@ def tangential_shear(table_l, table_r=None, boost_correction=False,
     result['z_l'] = mean_lens_redshift(table_l)
     result['z_s'] = mean_source_redshift(table_l)
 
+    if shear_responsivity_correction:
+        result['2R'] = 2 * shear_responsivity_factor(table_l)
+        result['et'] /= result['2R']
+
+    if hsc_additive_shear_bias_correction:
+        result['c_bias'] = surveys.hsc.additive_shear_bias(table_l,"gammat")
+        result['ds'] -= result['c_bias']
+
     if boost_correction:
         if table_r is None:
             raise ValueError('Cannot compute boost factor correction without' +
@@ -384,14 +394,20 @@ def tangential_shear(table_l, table_r=None, boost_correction=False,
         result['R_t'] = matrix_shear_response_factor(table_l)
         result['et'] /= result['R_t']
 
-    if shear_responsivity_correction:
-        result['2R'] = 2 * shear_responsivity_factor(table_l)
-        result['et'] /= result['2R']
-
     if hsc_selection_bias_correction:
         result['1+m_sel'] = 1 + surveys.hsc.selection_bias_factor(
             table_l)
         result['et'] *= result['1+m_sel']
+
+    if hsc_y3_selection_bias_correction:
+        m_sel, a_sel = surveys.hsc.selection_bias_y3(
+            table_l, return_error=False)
+        result['1+m_sel'] = 1 + m_sel
+        result['a_sel'] = a_sel
+        result['ds_psf'] = surveys.hsc.gammat_psf(table_l)
+        result['ds'] -= result['a_sel']*result['ds_psf']
+        result['ds'] /= result['1+m_sel']
+
 
     if random_subtraction:
         if table_r is None:
@@ -419,6 +435,8 @@ def excess_surface_density(table_l, table_r=None,
                            matrix_shear_response_correction=False,
                            shear_responsivity_correction=False,
                            hsc_selection_bias_correction=False,
+                           hsc_additive_shear_bias_correction=False,
+                           hsc_y3_selection_bias_correction=False,
                            random_subtraction=False,
                            return_table=False):
     """Compute the mean excess surface density with corrections, if applicable.
@@ -481,6 +499,15 @@ def excess_surface_density(table_l, table_r=None,
     result['z_l'] = mean_lens_redshift(table_l)
     result['z_s'] = mean_source_redshift(table_l)
 
+
+    if shear_responsivity_correction:
+        result['2R'] = 2 * shear_responsivity_factor(table_l)
+        result['ds'] /= result['2R']
+
+    if hsc_additive_shear_bias_correction:
+        result['c_bias'] = surveys.hsc.additive_shear_bias(table_l,"deltasigma")
+        result['ds'] -= result['c_bias']
+
     if boost_correction:
         if table_r is None:
             raise ValueError('Cannot compute boost factor correction without' +
@@ -496,14 +523,20 @@ def excess_surface_density(table_l, table_r=None,
         result['R_t'] = matrix_shear_response_factor(table_l)
         result['ds'] /= result['R_t']
 
-    if shear_responsivity_correction:
-        result['2R'] = 2 * shear_responsivity_factor(table_l)
-        result['ds'] /= result['2R']
 
     if hsc_selection_bias_correction:
         result['1+m_sel'] = 1 + surveys.hsc.selection_bias_factor(
             table_l)
         result['ds'] *= result['1+m_sel']
+
+    if hsc_y3_selection_bias_correction:
+        m_sel, a_sel = surveys.hsc.selection_bias_y3(
+            table_l, return_error=False)
+        result['1+m_sel'] = 1 + m_sel
+        result['a_sel'] = a_sel
+        result['ds_psf'] = surveys.hsc.deltasigma_psf(table_l)
+        result['ds'] -= result['a_sel']*result['ds_psf']
+        result['ds'] /= result['1+m_sel']
 
     if photo_z_dilution_correction:
         result['f_bias'] = photo_z_dilution_factor(table_l)

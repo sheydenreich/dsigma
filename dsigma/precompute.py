@@ -299,7 +299,7 @@ def precompute(
                         argsort_pix])
 
     for key in ['w', 'e_1', 'e_2', 'm', 'e_rms', 'R_2', 'R_11', 'R_22',
-                'R_12', 'R_21']:
+                'R_12', 'R_21', 'c_1', 'c_2', 'e_psf_1', 'e_psf_2']:
         if key in table_s.colnames:
             table_engine_s[key] = np.ascontiguousarray(
                 table_s[key][argsort_pix_s], dtype=np.float64)
@@ -402,11 +402,22 @@ def precompute(
         key_list.append('sum w_ls (1 - e_rms^2)')
 
     if 'R_2' in table_s.colnames:
-        key_list.append('sum w_ls A p(R_2=0.3)')
+        key_list.append('sum w_ls p(R_2=0.3)')
+
+    if 'magA' in table_s.colnames:
+        key_list.append('sum w_ls p(A=25.5)')
 
     if (('R_11' in table_s.colnames) and ('R_12' in table_s.colnames) and
             ('R_21' in table_s.colnames) and ('R_22' in table_s.colnames)):
         key_list.append('sum w_ls R_T')
+
+    if 'c_1' in table_s.colnames and 'c_2' in table_s.colnames:
+        key_list.append('sum w_ls c')
+        key_list.append('sum w_ls sigma_crit c')
+    
+    if 'e_psf_1' in table_s.colnames and 'e_psf_2' in table_s.colnames:
+        key_list.append('sum w_ls e_psf')
+        key_list.append('sum w_ls sigma_crit e_psf')
 
     for key in key_list:
         table_engine_r[key] = np.ascontiguousarray(
