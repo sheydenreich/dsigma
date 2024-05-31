@@ -95,7 +95,7 @@ def precompute_engine(
         c_2 = table_s['c_2']
 
     cdef bint has_A = 'magA' in table_s.keys()
-    cdef double[::1] aperture_mag
+    cdef double[::1] magA10
     if has_A:
         magA10 = table_s['magA']
 
@@ -294,7 +294,7 @@ def precompute_engine(
                         sum_w_ls_p_R_2[offset_result + i_bin] += (
                             w_ls / 0.01)
                     if has_A and magA10[i_s] >= 25.475: #25.5-0.025
-                        sum_w_ls_p_A[offset_result + i_bin] += w_ls / 0.025
+                        sum_w_ls_p_A[offset_result + i_bin] += (w_ls / 0.025)
                     if has_R_matrix:
                         sum_w_ls_R_T[offset_result + i_bin] += w_ls * (
                             R_11[i_s] * cos_2phi * cos_2phi +

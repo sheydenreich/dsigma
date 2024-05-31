@@ -299,7 +299,7 @@ def precompute(
                         argsort_pix])
 
     for key in ['w', 'e_1', 'e_2', 'm', 'e_rms', 'R_2', 'R_11', 'R_22',
-                'R_12', 'R_21', 'c_1', 'c_2', 'e_psf_1', 'e_psf_2']:
+                'R_12', 'R_21', 'c_1', 'c_2', 'e_psf_1', 'e_psf_2', 'magA']:
         if key in table_s.colnames:
             table_engine_s[key] = np.ascontiguousarray(
                 table_s[key][argsort_pix_s], dtype=np.float64)
