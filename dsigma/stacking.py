@@ -377,7 +377,7 @@ def tangential_shear(table_l, table_r=None, boost_correction=False,
 
     if hsc_additive_shear_bias_correction:
         result['c_bias'] = surveys.hsc.additive_shear_bias(table_l,"gammat")
-        result['ds'] -= result['c_bias']
+        result['et'] -= result['c_bias']
 
     if boost_correction:
         if table_r is None:
@@ -404,9 +404,9 @@ def tangential_shear(table_l, table_r=None, boost_correction=False,
             table_l, return_error=False)
         result['1+m_sel'] = 1 + m_sel
         result['a_sel'] = a_sel
-        result['ds_psf'] = surveys.hsc.gammat_psf(table_l)
-        result['ds'] -= result['a_sel']*result['ds_psf']
-        result['ds'] /= result['1+m_sel']
+        result['et_psf'] = surveys.hsc.gammat_psf(table_l)
+        result['et'] -= result['a_sel']*result['et_psf']
+        result['et'] /= result['1+m_sel']
 
 
     if random_subtraction:
@@ -419,6 +419,8 @@ def tangential_shear(table_l, table_r=None, boost_correction=False,
             matrix_shear_response_correction=matrix_shear_response_correction,
             shear_responsivity_correction=shear_responsivity_correction,
             hsc_selection_bias_correction=hsc_selection_bias_correction,
+            hsc_additive_shear_bias_correction=hsc_additive_shear_bias_correction,
+            hsc_y3_selection_bias_correction=hsc_y3_selection_bias_correction,
             random_subtraction=False, return_table=False)
         result['et'] -= result['et_r']
 
@@ -553,6 +555,8 @@ def excess_surface_density(table_l, table_r=None,
             matrix_shear_response_correction=matrix_shear_response_correction,
             shear_responsivity_correction=shear_responsivity_correction,
             hsc_selection_bias_correction=hsc_selection_bias_correction,
+            hsc_additive_shear_bias_correction=hsc_additive_shear_bias_correction,
+            hsc_y3_selection_bias_correction=hsc_y3_selection_bias_correction,
             random_subtraction=False, return_table=False)
         result['ds'] -= result['ds_r']
 
