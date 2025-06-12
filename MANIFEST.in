@@ -5,3 +5,10 @@ include pyproject.toml
 include dsigma/precompute_engine.pyx
 exclude dsigma/precompute_engine.c
 exclude tests/*
+include dsigma/precompute_engine_cuda.cu
+include dsigma/_precompute_cuda.pyx
+include dsigma/_precompute_cuda.pxd
+include dsigma/precompute_interface.cpp
+include dsigma/precompute_interface.h
+include dsigma/cuda_host_utils.cpp
+include dsigma/cuda_host_utils.h
