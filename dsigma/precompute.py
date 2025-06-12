@@ -17,6 +17,12 @@ from .physics import critical_surface_density
 from .physics import effective_critical_surface_density
 from .precompute_engine import precompute_engine
 
+try:
+    from ._precompute_cuda import precompute_gpu_wrapper
+    GPU_AVAILABLE = True
+except ImportError:
+    GPU_AVAILABLE = False
+
 
 __all__ = ["photo_z_dilution_factor", "mean_photo_z_offset", "precompute"]
 
@@ -183,7 +189,7 @@ def precompute(
         table_l, table_s, bins, table_c=None, table_n=None,
         cosmology=FlatLambdaCDM(H0=100, Om0=0.3), comoving=True,
         weighting=-2, lens_source_cut=0, nside=256, n_jobs=1,
-        progress_bar=False):
+        progress_bar=False, use_gpu=False):
     """For all lenses in the catalog, precompute the lensing statistics.
 
     Parameters
@@ -230,6 +236,10 @@ def precompute(
         Number of jobs to run at the same time. Default is 1.
     progress_bar : boolean, option
         Whether to show a progress bar for the main loop over lens pixels.
+        Default is False.
+    use_gpu : bool, optional
+        If True, attempt to use the GPU-accelerated precomputation engine.
+        If False or GPU is not available, falls back to the CPU engine.
         Default is False.
 
     Returns
@@ -429,46 +439,168 @@ def precompute(
 
     dist_3d_sq_bins = np.minimum(4 * np.sin(theta_bins / 2.0)**2, 2.0)
 
-    # When running in parrallel, replace numpy arrays with shared-memory
-    # multiprocessing arrays.
-    if n_jobs > 1:
-        dist_3d_sq_bins = get_raw_multiprocessing_array(dist_3d_sq_bins)
-        for table_engine in [table_engine_l, table_engine_s, table_engine_r]:
-            for key in table_engine.keys():
-                table_engine[key] = get_raw_multiprocessing_array(
-                    table_engine[key])
+    if use_gpu:
+        if not GPU_AVAILABLE:
+            warnings.warn(
+                "GPU requested (use_gpu=True) but GPU extensions not found "
+                "or failed to import. Falling back to CPU.", RuntimeWarning)
+            # Fall through to CPU path by not setting use_gpu to False here,
+            # rather let the original CPU logic handle it.
+            # The structure below will naturally fall to the CPU part.
+        else:
+            # Prepare data for precompute_gpu_wrapper
+            # Ensure all arrays are standard NumPy arrays, not RawArray
+            # (RawArray conversion happens later for CPU if n_jobs > 1)
 
-    # Create a queue that holds all the pixels containing lenses.
-    if n_jobs == 1:
-        queue = Queue.Queue()
-    else:
-        queue = mp.Queue()
+            # Lens data
+            z_l_np = table_engine_l['z']
+            d_com_l_np = table_engine_l['d_com']
+            sin_ra_l_np = table_engine_l['sin ra']
+            cos_ra_l_np = table_engine_l['cos ra']
+            sin_dec_l_np = table_engine_l['sin dec']
+            cos_dec_l_np = table_engine_l['cos dec']
+            # Sorted HEALPix IDs for lenses
+            healpix_id_l_np = pix_l[argsort_pix_l].astype(np.int64)
 
-    for i in range(len(u_pix_l)):
-        queue.put(i)
+            # Source data
+            z_s_np = table_engine_s['z']
+            d_com_s_np = table_engine_s['d_com']
+            sin_ra_s_np = table_engine_s['sin ra']
+            cos_ra_s_np = table_engine_s['cos ra']
+            sin_dec_s_np = table_engine_s['sin dec']
+            cos_dec_s_np = table_engine_s['cos dec']
+            w_s_np = table_engine_s['w']
+            e_1_s_np = table_engine_s['e_1']
+            e_2_s_np = table_engine_s['e_2']
+            z_l_max_s_np = table_engine_s['z_l_max']
+            # Sorted HEALPix IDs for sources
+            healpix_id_s_np = pix_s[argsort_pix_s].astype(np.int64)
 
-    args = (u_pix_l, n_pix_l, u_pix_s, n_pix_s, dist_3d_sq_bins,
-            table_engine_l, table_engine_s, table_engine_r, bins, comoving,
-            weighting, nside, queue, progress_bar)
+            # Optional data
+            has_sigma_crit_eff = 'sigma_crit_eff' in table_engine_l
+            sigma_crit_eff_l_np = table_engine_l.get('sigma_crit_eff')
+            # n_z_bins_l calculation:
+            n_z_bins_l_val = 0
+            if has_sigma_crit_eff and sigma_crit_eff_l_np is not None and len(table_l) > 0:
+                n_z_bins_l_val = sigma_crit_eff_l_np.shape[0] // len(table_l)
 
-    if n_jobs == 1:
-        precompute_engine(*args)
-    else:
-        processes = []
-        for i in range(n_jobs):
-            process = mp.Process(target=precompute_engine, args=(*args, ))
-            if i == 0:
-                args = list(args)
-                args[-1] = False
-                args = tuple(args)
-            process.start()
-            processes.append(process)
-        for i in range(n_jobs):
-            processes[i].join()
+            z_bin_s_np = table_engine_s.get('z_bin') # Will be int32 if from test, else needs cast
+
+            has_m_s = 'm' in table_engine_s
+            m_s_np = table_engine_s.get('m')
+            has_e_rms_s = 'e_rms' in table_engine_s
+            e_rms_s_np = table_engine_s.get('e_rms')
+            has_R_2_s = 'R_2' in table_engine_s
+            R_2_s_np = table_engine_s.get('R_2')
+            has_R_matrix_s = ('R_11' in table_engine_s and
+                              'R_12' in table_engine_s and
+                              'R_21' in table_engine_s and
+                              'R_22' in table_engine_s)
+            R_11_s_np = table_engine_s.get('R_11')
+            R_12_s_np = table_engine_s.get('R_12')
+            R_21_s_np = table_engine_s.get('R_21')
+            R_22_s_np = table_engine_s.get('R_22')
+
+            # Output arrays
+            sum_1_r_np = table_engine_r['sum 1']
+            sum_w_ls_r_np = table_engine_r['sum w_ls']
+            sum_w_ls_e_t_r_np = table_engine_r['sum w_ls e_t']
+            sum_w_ls_e_t_sigma_crit_r_np = table_engine_r['sum w_ls e_t sigma_crit']
+            sum_w_ls_sigma_crit_r_np = table_engine_r['sum w_ls sigma_crit']
+            sum_w_ls_z_s_r_np = table_engine_r['sum w_ls z_s']
+
+            sum_w_ls_m_r_np = table_engine_r.get('sum w_ls m')
+            sum_w_ls_1_minus_e_rms_sq_r_np = table_engine_r.get('sum w_ls (1 - e_rms^2)')
+            sum_w_ls_A_p_R_2_r_np = table_engine_r.get('sum w_ls A p(R_2=0.3)')
+            sum_w_ls_R_T_r_np = table_engine_r.get('sum w_ls R_T')
+
+            # Assuming order_healpix is 'ring' as per HEALPix default in this file
+            order_healpix_str = "ring"
+
+            precompute_gpu_wrapper(
+                z_l_np, d_com_l_np, sin_ra_l_np, cos_ra_l_np, sin_dec_l_np, cos_dec_l_np,
+                healpix_id_l_np,
+                z_s_np, d_com_s_np, sin_ra_s_np, cos_ra_s_np, sin_dec_s_np, cos_dec_s_np,
+                w_s_np, e_1_s_np, e_2_s_np, z_l_max_s_np, healpix_id_s_np,
+                nside, order_healpix_str, # nside_healpix, order_healpix_str
+                has_sigma_crit_eff, n_z_bins_l_val,
+                sigma_crit_eff_l_np.astype(np.double) if sigma_crit_eff_l_np is not None else None,
+                z_bin_s_np.astype(np.int32) if z_bin_s_np is not None else None,
+                has_m_s, m_s_np.astype(np.double) if m_s_np is not None else None,
+                has_e_rms_s, e_rms_s_np.astype(np.double) if e_rms_s_np is not None else None,
+                has_R_2_s, R_2_s_np.astype(np.double) if R_2_s_np is not None else None,
+                has_R_matrix_s,
+                R_11_s_np.astype(np.double) if R_11_s_np is not None else None,
+                R_12_s_np.astype(np.double) if R_12_s_np is not None else None,
+                R_21_s_np.astype(np.double) if R_21_s_np is not None else None,
+                R_22_s_np.astype(np.double) if R_22_s_np is not None else None,
+                dist_3d_sq_bins, len(bins) - 1, # dist_3d_sq_bins_np, n_bins
+                comoving, float(weighting), # comoving, weighting
+                sum_1_r_np, sum_w_ls_r_np, sum_w_ls_e_t_r_np,
+                sum_w_ls_e_t_sigma_crit_r_np, sum_w_ls_sigma_crit_r_np,
+                sum_w_ls_z_s_r_np,
+                sum_w_ls_m_r_np, sum_w_ls_1_minus_e_rms_sq_r_np,
+                sum_w_ls_A_p_R_2_r_np, sum_w_ls_R_T_r_np,
+                n_gpus=1 # Assuming single GPU for now
+            )
+            # Results are in table_engine_r, processing below will handle them.
+
+    # Conditional CPU execution (original logic)
+    if not use_gpu or not GPU_AVAILABLE:
+        # When running in parrallel, replace numpy arrays with shared-memory
+        # multiprocessing arrays.
+        current_dist_3d_sq_bins = dist_3d_sq_bins # Keep original numpy array if GPU path failed
+        if n_jobs > 1:
+            current_dist_3d_sq_bins = get_raw_multiprocessing_array(dist_3d_sq_bins)
+            # Convert all table_engine arrays to RawArray for multiprocessing
+            # This needs to be done carefully if GPU path modified them (it shouldn't if it ran)
+            # Assuming table_engine_l/s/r are still numpy arrays if GPU path was chosen but failed before this point
+            # or if GPU path was not chosen at all.
+            for table_engine_dict_cpu in [table_engine_l, table_engine_s, table_engine_r]:
+                for key_cpu in table_engine_dict_cpu.keys():
+                    if isinstance(table_engine_dict_cpu[key_cpu], np.ndarray): # Ensure it's an ndarray
+                        table_engine_dict_cpu[key_cpu] = get_raw_multiprocessing_array(
+                            table_engine_dict_cpu[key_cpu])
+        else: # Ensure current_dist_3d_sq_bins is the numpy version for single job CPU
+            current_dist_3d_sq_bins = dist_3d_sq_bins
+
+
+        # Create a queue that holds all the pixels containing lenses.
+        if n_jobs == 1:
+            queue = Queue.Queue()
+        else:
+            queue = mp.Queue()
+
+        for i in range(len(u_pix_l)):
+            queue.put(i)
+
+        args = (u_pix_l, n_pix_l, u_pix_s, n_pix_s, current_dist_3d_sq_bins,
+                table_engine_l, table_engine_s, table_engine_r, bins, comoving,
+                weighting, nside, queue, progress_bar)
+
+        if n_jobs == 1:
+            precompute_engine(*args)
+        else:
+            processes = []
+            # args_list needs to be created for each process if progress_bar is selective
+            for i in range(n_jobs):
+                # Only show progress bar for the first job
+                current_progress_bar = progress_bar if i == 0 else False
+                current_args = list(args)
+                current_args[-1] = current_progress_bar # Update progress_bar argument
+
+                process = mp.Process(target=precompute_engine, args=tuple(current_args))
+                process.start()
+                processes.append(process)
+            for i in range(n_jobs):
+                processes[i].join()
 
     inv_argsort_pix_l = np.argsort(argsort_pix_l)
     for key in table_engine_r.keys():
-        table_l[key] = np.array(table_engine_r[key]).reshape(
+        # Ensure data from RawArray is converted back if necessary,
+        # or if GPU path ran, it's already numpy array.
+        result_array = np.array(table_engine_r[key])
+        table_l[key] = result_array.reshape(
             len(table_l), len(bins) - 1)[inv_argsort_pix_l]
 
     table_l['sum w_ls z_l'] = table_l['z'][:, np.newaxis] * table_l['sum w_ls']
