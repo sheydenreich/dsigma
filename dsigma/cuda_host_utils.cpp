@@ -10,36 +10,36 @@
 #endif
 
 // Conditional include for Healpix_cxx and setup
-#if __has_include(<healpix_cxx/healpix_base.h>) && __has_include(<healpix_cxx/pointing.h>)
-    #include <healpix_cxx/healpix_base.h>
-    #include <healpix_cxx/pointing.h>
-    // Potentially needed for Healpix_Ordering enum if not in healpix_base.h
-    #if __has_include(<healpix_cxx/healpix_orderings.h>)
-      #include <healpix_cxx/healpix_orderings.h>
-    #endif
-    #ifndef HEALPIX_ORDERING_DEFINED
-        // Older versions of Healpix_cxx might have RING/NESTED in Healpix_Base
-        // If Healpix_Ordering is a specific type, this might need adjustment
-        // For typical usage, RING and NESTED are enum values.
-        #define HEALPIX_ORDERING_DEFINED
-    #endif
-    #define HEALPIX_FOUND 1
-#elif __has_include(<chealpix.h>)
-    // Basic C API might be available.
-    // This example will focus on C++ API. If C API is the only one,
-    // these functions would need a different implementation.
-    #warning "Found <chealpix.h>, but C++ Healpix_cxx API is preferred. Stubs will be used if C++ API is not found."
-    #include <chealpix.h>
-    // Define HEALPIX_FOUND only if we intend to use C API as fallback.
-    // For now, let's assume we need the C++ API for Healpix_Base and pointing.
-    #ifndef HEALPIX_FOUND // Only if C++ API not found above
-        #define HEALPIX_FOUND 0 // Or a specific flag for C API, e.g., HEALPIX_C_FOUND
-        #warning "Healpix_cxx C++ headers not found. Healpix related functions will be dummies."
-    #endif
-#else
-    #warning "Healpix_cxx headers not found. Healpix related functions will be dummies."
-    #define HEALPIX_FOUND 0
+// #if __has_include(<healpix_cxx/healpix_base.h>) && __has_include(<healpix_cxx/pointing.h>)
+#include <healpix_base.h>
+#include <pointing.h>
+// Potentially needed for Healpix_Ordering enum if not in healpix_base.h
+// #if __has_include(<healpix_cxx/healpix_orderings.h>)
+// #include <healpix_orderings.h>
+// #endif
+#ifndef HEALPIX_ORDERING_DEFINED
+    // Older versions of Healpix_cxx might have RING/NESTED in Healpix_Base
+    // If Healpix_Ordering is a specific type, this might need adjustment
+    // For typical usage, RING and NESTED are enum values.
+    #define HEALPIX_ORDERING_DEFINED
 #endif
+// #define HEALPIX_FOUND 1
+// #elif __has_include(<chealpix.h>)
+//     // Basic C API might be available.
+//     // This example will focus on C++ API. If C API is the only one,
+//     // these functions would need a different implementation.
+//     #warning "Found <chealpix.h>, but C++ Healpix_cxx API is preferred. Stubs will be used if C++ API is not found."
+//     #include <chealpix.h>
+//     // Define HEALPIX_FOUND only if we intend to use C API as fallback.
+//     // For now, let's assume we need the C++ API for Healpix_Base and pointing.
+//     #ifndef HEALPIX_FOUND // Only if C++ API not found above
+//         #define HEALPIX_FOUND 0 // Or a specific flag for C API, e.g., HEALPIX_C_FOUND
+//         #warning "Healpix_cxx C++ headers not found. Healpix related functions will be dummies."
+//     #endif
+// #else
+//     #warning "Healpix_cxx headers not found. Healpix related functions will be dummies."
+//     #define HEALPIX_FOUND 0
+// #endif
 
 // nanoflann is header only, already included in cuda_host_utils.h
 
@@ -61,7 +61,7 @@ std::vector<long> convert_to_healpix_ids_cpp(
     if (order_str == "ring") {
         hpix_order_scheme = RING;
     } else if (order_str == "nested") {
-        hpix_order_scheme = NESTED;
+        hpix_order_scheme = NEST;
     } else {
         throw std::runtime_error("Invalid HEALPix order: must be 'ring' or 'nested'.");
     }
@@ -97,12 +97,12 @@ PointCloud<double> build_healpix_xyz_celestial_cpp(
     if (order_str == "ring") {
         hpix_order_scheme = RING;
     } else if (order_str == "nested") {
-        hpix_order_scheme = NESTED;
+        hpix_order_scheme = NEST;
     } else {
         throw std::runtime_error("Invalid HEALPix order: must be 'ring' or 'nested'.");
     }
 
-    Healpix_Base hp_base(nside, hpix_order_scheme);
+    Healpix_Base hp_base(nside, hpix_order_scheme, SET_NSIDE);
     cloud.pts.resize(unique_pix_ids.size());
 
     for (size_t i = 0; i < unique_pix_ids.size(); ++i) {
@@ -143,8 +143,8 @@ std::vector<size_t> find_neighboring_pixel_indices_nanoflann_cpp(
     kd_tree_t index(3, source_pixel_cloud, nanoflann::KDTreeSingleIndexAdaptorParams(10 /* max leaf */));
     index.buildIndex();
 
-    std::vector<nanoflann::ResultItem<size_t, double>> ret_matches;
-    nanoflann::SearchParams params;
+    std::vector<nanoflann::ResultItem<unsigned int, double>> ret_matches;
+    nanoflann::SearchParameters params;
     // params.sorted = true; // If sorted results are needed
 
     const size_t n_matches = index.radiusSearch(&query_pt[0], search_radius_sq, ret_matches, params);

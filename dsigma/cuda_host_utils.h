@@ -3,6 +3,7 @@
 
 #include <vector>
 #include <string> // For std::string, if needed for Healpix_cxx or table interactions
+#include "healpix_base.h" // Make sure this is included
 
 // Forward declarations if necessary, or include minimal headers.
 // For Healpix_cxx, we might need something like:
@@ -48,5 +49,8 @@ std::vector<size_t> find_neighboring_pixel_indices_nanoflann_cpp(
     const PointCloud<double>& source_pixel_cloud,
     const double query_pt[3], // Single query point
     double search_radius_sq);
+
+// Declaration for the healpix helper function
+Healpix_Ordering_Scheme get_healpix_scheme(const std::string& order);
 
 #endif // CUDA_HOST_UTILS_H

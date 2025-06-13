@@ -2,6 +2,7 @@
 #define PRECOMPUTE_INTERFACE_H
 
 #include <vector> // Used for potential data handling on C++ side, though raw pointers are for kernel
+#include <string>
 
 // Struct to hold all data tables (pointers to arrays)
 struct TableData {
@@ -105,7 +106,7 @@ struct TableData {
 extern "C" {
 #endif
 
-int precompute_cuda_interface(TableData& tables, int n_gpus);
+int precompute_cuda_interface(TableData* tables, int n_gpus);
 
 #ifdef __cplusplus
 }

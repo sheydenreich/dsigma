@@ -2,6 +2,8 @@
 #include <cmath>
 #include <cfloat> // For DBL_MAX
 
+#include "precompute_engine_cuda.h"
+
 // Constants
 #define SIGMA_CRIT_FACTOR 1.662890013800909e+09
 #define DEG2RAD 0.017453292519943295
@@ -65,47 +67,42 @@ __device__ double calculate_w_ls_gpu(double sigma_crit, double w_s, float weight
     return w_s / (sigma_crit_sq * pow(sigma_crit_sq, weighting / 2.0f));
 }
 
-// Device function to calculate cos(2*phi) and sin(2*phi) for tangential shear
+
 __device__ void calculate_et_components_gpu(
     double sin_ra_l, double cos_ra_l, double sin_dec_l, double cos_dec_l,
     double sin_ra_s, double cos_ra_s, double sin_dec_s, double cos_dec_s,
     double& cos_2phi, double& sin_2phi) {
 
-    // Calculate position angle phi of source relative to lens
-    // Similar to astropy.coordinates.position_angle
-    // RA/Dec are in radians here
-    double delta_ra = ra_s - ra_l; // Assuming ra_s, ra_l are already available or passed
-                                   // This needs actual ra_l, dec_l, ra_s, dec_s
-                                   // The current inputs are sin/cos components.
-                                   // We need to reconstruct angles or use a different formulation.
+    // Use trigonometric angle subtraction identities to get sin(ra_s - ra_l) and cos(ra_s - ra_l)
+    // sin(A-B) = sin(A)cos(B) - cos(A)sin(B)
+    // cos(A-B) = cos(A)cos(B) + sin(A)sin(B)
+    // double sin_delta_ra = sin_ra_s * cos_ra_l - cos_ra_s * sin_ra_l;
+    // double cos_delta_ra = cos_ra_s * cos_ra_l + sin_ra_s * sin_ra_l;
 
-    // Reconstruct angles (less efficient, but direct from inputs if needed)
-    // double ra_l_rad = atan2(sin_ra_l, cos_ra_l);
-    // double dec_l_rad = asin(sin_dec_l); // asin range is [-pi/2, pi/2] which is correct for dec
-    // double ra_s_rad = atan2(sin_ra_s, cos_ra_s);
-    // double dec_s_rad = asin(sin_dec_s);
+    // // Calculate the components of the position angle 'phi' using the robust formula
+    // // suggested in the original comments. 'phi' is the angle of the source
+    // // relative to the lens in the tangent plane.
+    // // x = cos(dec_s) * sin(ra_s - ra_l)
+    // // y = sin(dec_s) * cos(dec_l) - cos(dec_s) * sin(dec_l) * cos(ra_s - ra_l)
+    // double x = cos_dec_s * sin_delta_ra;
+    // double y = sin_dec_s * cos_dec_l - cos_dec_s * sin_dec_l * cos_delta_ra;
 
-    // Using spherical trigonometry for position angle
-    // cos(theta_s) = sin(dec_l)sin(dec_s) + cos(dec_l)cos(dec_s)cos(ra_s - ra_l)
-    // sin_pa = cos(dec_s) sin(ra_s - ra_l) / sin(theta_s)
-    // cos_pa = (sin(dec_s)cos(dec_l) - cos(dec_s)sin(dec_l)cos(ra_s-ra_l)) / sin(theta_s)
-    // This is for PA. For phi (lens-source orientation for shear), it's more complex.
+    // double r_sq = x * x + y * y;
 
-    // Let's use the delta_x, delta_y approach on the sphere (gnomonic projection approximation for small angles)
-    // Or better, use the definition from the existing Cython code's delta_alpha, delta_delta
-    // delta_alpha = (ra_s - ra_l) * cos(dec_l)
-    // delta_delta = dec_s - dec_l
-    // phi = atan2(delta_delta, delta_alpha)
-    // This requires actual angles.
+    // if (r_sq == 0) {
+    //     // Lens and source are at the same position, angle is undefined.
+    //     // Return a default (e.g., angle of 0).
+    //     cos_2phi = 1.0;
+    //     sin_2phi = 0.0;
+    // } else {
+    //     // Use double-angle identities to find cos(2*phi) and sin(2*phi) directly from x and y.
+    //     // cos(phi) = x / sqrt(r_sq), sin(phi) = y / sqrt(r_sq)
+    //     // cos(2*phi) = cos^2(phi) - sin^2(phi) = (x^2 - y^2) / r_sq
+    //     // sin(2*phi) = 2 * sin(phi) * cos(phi) = (2 * x * y) / r_sq
+    //     cos_2phi = (x * x - y * y) / r_sq;
+    //     sin_2phi = (2.0 * x * y) / r_sq;
+    // }
 
-    // Alternative using vectors (more robust for large separations, though shear is usually small sep.)
-    // Vector L (lens) and S (source) from observer O.
-    // We need the angle of the vector L->S in the tangent plane at L, relative to the local North/East.
-    // Let's use the same logic as in the Cython `precompute_engine.pyx` for `phi_l`.
-    // It uses `np.arctan2(y, x)` where:
-    // x = cos_dec_s * sin(ra_s - ra_l)
-    // y = sin_dec_s * cos_dec_l - cos_dec_s * sin_dec_l * cos(ra_s - ra_l)
-    // This is the position angle of S *from* L.
 
     double delta_ra_rad = acos(fmax(-1.0, fmin(1.0, cos_ra_s * cos_ra_l + sin_ra_s * sin_ra_l))); // More stable way to get delta_ra if cos(delta_ra) is known
                                                                                            // This is not delta_ra directly.
