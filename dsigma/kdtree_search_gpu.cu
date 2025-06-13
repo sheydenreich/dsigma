@@ -1,5 +1,5 @@
 #include "kdtree_search_gpu.h"
-#include "dsigma/healpix_gpu.h" // For dot_gpu (though not strictly needed for this version)
+#include "healpix_gpu.h" // For dot_gpu (though not strictly needed for this version)
 #include <cmath> // For fabsf
 
 // Helper function to calculate squared distance between two float3 points

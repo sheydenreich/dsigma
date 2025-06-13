@@ -4,6 +4,7 @@
 #include "healpix_gpu.h"          // For GPU-side HEALPix functions
 #include "kdtree_search_gpu.h"    // For GPU-side KD-Tree search
 #include "healpix_base.h"         // For host-side Healpix_Base
+#include <cfloat>
 #include <cuda_runtime.h>
 #include <vector_types.h>       // For float3
 #include <vector>
@@ -32,8 +33,7 @@
     } \
 }
 
-// Helper to get HEALPix scheme from string
-#if defined(HEALPIX_FOUND) && HEALPIX_FOUND == 1
+
 // This check is to ensure Healpix_Ordering_Scheme and related enums are available
 // It's already guarded in cuda_host_utils.cpp, but good for clarity here too
 // Forward declaration for Healpix_Ordering_Scheme if healpix_base.h doesn't provide it early enough or standalone
@@ -204,7 +204,7 @@ __device__ void process_found_source_hp_pixel_callback(int source_kdtree_idx, vo
         double zs_i = cb_data->g_z_s[original_source_idx];
 
         // Redshift filter
-        if (cb_data->zl_i >= zs_i || cb_data->zl_i >= cb_data->g_z_l_max_s[original_source_idx]) {
+        if (cb_data->lens_zl_i >= zs_i || cb_data->lens_zl_i >= cb_data->g_z_l_max_s[original_source_idx]) {
             continue;
         }
 
@@ -379,11 +379,11 @@ __global__ void process_all_lenses_kernel(
     const int* g_unique_hp_id_offsets_end,
 
     // Optional source data
-    boolเศ_has_sigma_crit_eff, intเศ_n_z_bins_l, const double*เศ_g_sigma_crit_eff_l, const int*เศ_g_z_bin_s,
-    boolเศ_has_m_s, const double*เศ_g_m_s,
-    boolเศ_has_e_rms_s, const double*เศ_g_e_rms_s,
-    boolเศ_has_R_2_s, const double*เศ_g_R_2_s,
-    boolเศ_has_R_matrix_s, const double*เศ_g_R_11_s, const double*เศ_g_R_12_s, const double*เศ_g_R_21_s, const double*เศ_g_R_22_s,
+    bool _has_sigma_crit_eff, int _n_z_bins_l, const double* _g_sigma_crit_eff_l, const int* _g_z_bin_s,
+    bool _has_m_s, const double* _g_m_s,
+    bool _has_e_rms_s, const double* _g_e_rms_s,
+    bool _has_R_2_s, const double* _g_R_2_s,
+    bool _has_R_matrix_s, const double* _g_R_11_s, const double* _g_R_12_s, const double* _g_R_21_s, const double* _g_R_22_s,
 
     // Configuration
     int N_lenses, int N_bins, long nside_healpix, bool comoving, int weighting,
@@ -470,17 +470,17 @@ __global__ void process_all_lenses_kernel(
     callback_data.g_e_2_s = g_e_2_s;
     callback_data.g_z_l_max_s = g_z_l_max_s;
 
-    callback_data.has_sigma_crit_eff =เศ_has_sigma_crit_eff;
-    callback_data.n_z_bins_l =เศ_n_z_bins_l;
-    callback_data.g_sigma_crit_eff_l =เศ_g_sigma_crit_eff_l;
-    callback_data.g_z_bin_s =เศ_g_z_bin_s;
+    callback_data.has_sigma_crit_eff = _has_sigma_crit_eff;
+    callback_data.n_z_bins_l = _n_z_bins_l;
+    callback_data.g_sigma_crit_eff_l = _g_sigma_crit_eff_l;
+    callback_data.g_z_bin_s = _g_z_bin_s;
 
-    callback_data.has_m_s =เศ_has_m_s; callback_data.g_m_s =เศ_g_m_s;
-    callback_data.has_e_rms_s =เศ_has_e_rms_s; callback_data.g_e_rms_s =เศ_g_e_rms_s;
-    callback_data.has_R_2_s =เศ_has_R_2_s; callback_data.g_R_2_s =เศ_g_R_2_s;
-    callback_data.has_R_matrix_s =เศ_has_R_matrix_s;
-    callback_data.g_R_11_s =เศ_g_R_11_s; callback_data.g_R_12_s =เศ_g_R_12_s;
-    callback_data.g_R_21_s =เศ_g_R_21_s; callback_data.g_R_22_s =เศ_g_R_22_s;
+    callback_data.has_m_s = _has_m_s; callback_data.g_m_s = _g_m_s;
+    callback_data.has_e_rms_s = _has_e_rms_s; callback_data.g_e_rms_s = _g_e_rms_s;
+    callback_data.has_R_2_s = _has_R_2_s; callback_data.g_R_2_s = _g_R_2_s;
+    callback_data.has_R_matrix_s = _has_R_matrix_s;
+    callback_data.g_R_11_s = _g_R_11_s; callback_data.g_R_12_s = _g_R_12_s;
+    callback_data.g_R_21_s = _g_R_21_s; callback_data.g_R_22_s = _g_R_22_s;
 
     callback_data.g_dist_3d_sq_bins = g_dist_3d_sq_bins;
     callback_data.comoving = comoving;
@@ -510,7 +510,7 @@ __global__ void process_all_lenses_kernel(
 }
 
 
-extern "C" int precompute_cuda_interface(TableData* tables) {
+int precompute_cuda_interface(TableData* tables, int n_gpus) {
     // --- 1. Input Validation (remains similar) ---
     if (!tables->z_l || !tables->d_com_l || !tables->sin_ra_l || !tables->cos_ra_l || !tables->sin_dec_l || !tables->cos_dec_l ||
         !tables->z_s || !tables->d_com_s || !tables->sin_ra_s || !tables->cos_ra_s || !tables->sin_dec_s || !tables->cos_dec_s || !tables->w_s || !tables->e_1_s || !tables->e_2_s || !tables->z_l_max_s || !tables->healpix_id_s ||

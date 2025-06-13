@@ -29,11 +29,13 @@ setup(
                 'dsigma/_precompute_cuda.pyx',
                 'dsigma/precompute_interface.cu',
                 'dsigma/cuda_host_utils.cpp',
+                'dsigma/healpix_gpu.cu',
+                'dsigma/kdtree_search_gpu.cu',
             ],
             # Add this line below
             include_dirs=['dsigma', numpy.get_include(),conda_include_path,
                           os.path.join(conda_prefix,"include/healpix_cxx/")],
-            extra_compile_args={'cxx': ['-O3','-g'], 'nvcc': ['-O3','-g']},
+            extra_compile_args={'cxx': ['-O3','-g'], 'nvcc': ['-O3','-g','-rdc=true']},
             libraries=['cudart', 'healpix_cxx'],
             define_macros=[('HEALPIX_FOUND', '1')],
                             )

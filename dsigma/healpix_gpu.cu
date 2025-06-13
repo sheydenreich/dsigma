@@ -2,24 +2,6 @@
 #include <cmath> // For M_PI, sqrt, fabs, atan2, acos, fmod, sin, cos
 
 // Define M_PI if not already defined (it's common in cmath but good to be safe)
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
-#ifndef M_PI_2
-#define M_PI_2 1.57079632679489661923 // M_PI / 2
-#endif
-
-#ifndef M_2PI
-#define M_2PI 6.28318530717958647692 // 2 * M_PI
-#endif
-
-// Helper constants for HEALPix
-static const double PI = M_PI;
-static const double TWO_PI = M_2PI;
-static const double HALF_PI = M_PI_2;
-static const double INV_PI = 1.0 / M_PI;
-static const double INV_TWO_PI = 1.0 / M_2PI;
 
 
 __device__ double dot_gpu(const float3& a, const float3& b) {
@@ -49,43 +31,7 @@ __device__ void ang2vec_gpu(double theta, double phi, float3& vec) {
     vec.z = static_cast<float>(cos(theta));
 }
 
-__device__ void spherical_to_cartesian_gpu(double sin_ra, double cos_ra, double sin_dec, double cos_dec, float3& vec) {
-    // Standard conversion:
-    // x = cos(dec) * cos(ra)
-    // y = cos(dec) * sin(ra)
-    // z = sin(dec)
-    // Here, ra is phi-like, dec is (pi/2 - theta)-like.
-    // So, x = sin(theta) * cos(phi)
-    //     y = sin(theta) * sin(phi)
-    //     z = cos(theta)
-    // With dec = pi/2 - theta: sin(dec) = cos(theta), cos(dec) = sin(theta)
-    // With ra = phi
-    vec.x = static_cast<float>(cos_dec * cos_ra); // cos_dec * cos_ra
-    vec.y = static_cast<float>(cos_dec * sin_ra); // cos_dec * sin_ra
-    vec.z = static_cast<float>(sin_dec);          // sin_dec
-}
 
-__device__ double get_max_pixrad_gpu(long nside) {
-    // This is an approximation. A common one is related to pixel resolution.
-    // The average pixel spacing is roughly related to sqrt(Area_sphere / Npix).
-    // Npix = 12 * nside^2. Area_sphere = 4*PI.
-    // So, spacing ~ sqrt(4*PI / (12*nside^2)) = sqrt(PI / (3*nside^2)) = (1/nside) * sqrt(PI/3).
-    // Max pixel radius is a bit larger.
-    // Another common approximation for pixel radius is ~2/nside radians.
-    // Healpix_Base::max_pixrad() is more complex.
-    // For now, using a simpler formula, e.g. M_PI / (2.0 * nside) as used in some contexts,
-    // or the one from problem statement: sqrt(M_PI / (3.0 * nside * nside)) * (2.0 / M_PI) * 2.0
-    // Let's use a slightly more standard approximation if possible, related to ~resolution.
-    // The solid angle of a pixel is approx. 4*PI / (12*nside^2) = PI / (3*nside^2).
-    // Radius of a disk with this area is r_eff = sqrt( (PI / (3*nside^2)) / PI) = 1 / (sqrt(3)*nside).
-    // Max radius can be larger. A common figure is around 2 times the mean spacing.
-    // Let's use M_PI / (2.0 * nside) for now, it's a known upper bound in some cases.
-    // Or simply: return 2.0 / nside; (approx pixel diameter)
-    // A value often quoted for pixel angular radius is ~ 1 / nside.
-    // The problem description suggested M_PI / (2.0 * nside). Let's use that.
-    if (nside <= 0) return PI; // Or some other appropriate error/default
-    return PI / (2.0 * static_cast<double>(nside));
-}
 
 
 __device__ long ang2pix_ring_gpu(long nside, double theta, double phi) {
