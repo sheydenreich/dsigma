@@ -5,41 +5,29 @@
 #include "precompute_engine_cuda.h"
 
 // Constants
-#define SIGMA_CRIT_FACTOR 1.662890013800909e+09
+#define SIGMA_CRIT_FACTOR 1.6629165401756011e+06
 #define DEG2RAD 0.017453292519943295
 
 // Forward declarations of device functions (if needed, or define before use)
 
 // Device function to calculate 3D distance squared
 __device__ double dist_3d_sq_gpu(
-    double sin_ra_1, double cos_ra_1, double sin_dec_1, double cos_dec_1, double d_com_1,
-    double sin_ra_2, double cos_ra_2, double sin_dec_2, double cos_dec_2, double d_com_2,
-    bool comoving) {
+    double sin_ra_1, double cos_ra_1, double sin_dec_1, double cos_dec_1,
+    double sin_ra_2, double cos_ra_2, double sin_dec_2, double cos_dec_2) {
 
-    double cos_angle = sin_dec_1 * sin_dec_2 + cos_dec_1 * cos_dec_2 * (sin_ra_1 * sin_ra_2 + cos_ra_1 * cos_ra_2);
-    // Ensure cos_angle is within [-1, 1] to avoid NaNs from acos due to precision errors
-    if (cos_angle > 1.0) cos_angle = 1.0;
-    if (cos_angle < -1.0) cos_angle = -1.0;
-
-    if (comoving) {
-        // Comoving distance squared
-        return d_com_1 * d_com_1 + d_com_2 * d_com_2 - 2.0 * d_com_1 * d_com_2 * cos_angle;
-    } else {
-        // Projected distance squared
-        double d_ang_12_sq = d_com_1 * d_com_1 * (1.0 - cos_angle * cos_angle) / (1.0 + cos_angle); // Approximation for small angles
-        if (cos_angle < 0.999999) { // if angle is not very small
-             d_ang_12_sq = d_com_1 * d_com_1 * 2.0 * (1.0 - cos_angle); // More stable for larger angles
-        }
-        // Ensure d_ang_12_sq is not negative due to precision errors
-        if (d_ang_12_sq < 0) d_ang_12_sq = 0;
-        return d_ang_12_sq;
-    }
+    // Match CPU implementation exactly: 3D Cartesian distance on unit sphere
+    double dx = cos_ra_1 * cos_dec_1 - cos_ra_2 * cos_dec_2;
+    double dy = sin_ra_1 * cos_dec_1 - sin_ra_2 * cos_dec_2;
+    double dz = sin_dec_1 - sin_dec_2;
+    
+    return dx * dx + dy * dy + dz * dz;
 }
 
 // Device function to calculate sigma_crit
 __device__ double calculate_sigma_crit_gpu(
     double d_com_l, double d_com_s, double z_l, double z_s,
-    bool has_sigma_crit_eff, int n_z_bins_l, double* sigma_crit_eff_l, int i_l, int z_bin_s_val) {
+    bool has_sigma_crit_eff, int n_z_bins_l, double* sigma_crit_eff_l, int i_l, int z_bin_s_val,
+    bool comoving) {
 
     if (has_sigma_crit_eff) {
         if (sigma_crit_eff_l != nullptr && z_bin_s_val >= 0 && z_bin_s_val < n_z_bins_l) {
@@ -50,11 +38,15 @@ __device__ double calculate_sigma_crit_gpu(
             return DBL_MAX; // Or some indicator of an issue
         }
     } else {
-        if (d_com_s <= d_com_l) { // lens behind source or at same distance
+        if (d_com_l >= d_com_s) { // lens behind source or at same distance
             return DBL_MAX; // Effectively infinite, w_ls will be 0
         }
-        double d_ls = (d_com_s - d_com_l) / (1.0 + z_s); // Proper distance
-        return SIGMA_CRIT_FACTOR * d_com_s / (d_com_l * d_ls * (1.0 + z_l) * (1.0 + z_l));
+        // Match CPU implementation exactly
+        double sigma_crit = SIGMA_CRIT_FACTOR * (1.0 + z_l) * d_com_s / d_com_l / (d_com_s - d_com_l);
+        if (comoving) {
+            sigma_crit /= (1.0 + z_l) * (1.0 + z_l);
+        }
+        return sigma_crit;
     }
 }
 
@@ -63,8 +55,14 @@ __device__ double calculate_w_ls_gpu(double sigma_crit, double w_s, float weight
     if (sigma_crit == DBL_MAX || sigma_crit == 0.0) { // Check for invalid sigma_crit
         return 0.0;
     }
-    double sigma_crit_sq = sigma_crit * sigma_crit;
-    return w_s / (sigma_crit_sq * pow(sigma_crit_sq, weighting / 2.0f));
+    
+    if (weighting == 0.0f) {
+        return w_s;
+    } else if (weighting == -2.0f) {
+        return w_s / (sigma_crit * sigma_crit);
+    } else {
+        return w_s * pow(sigma_crit, weighting);
+    }
 }
 
 
@@ -73,70 +71,26 @@ __device__ void calculate_et_components_gpu(
     double sin_ra_s, double cos_ra_s, double sin_dec_s, double cos_dec_s,
     double& cos_2phi, double& sin_2phi) {
 
-    // Use trigonometric angle subtraction identities to get sin(ra_s - ra_l) and cos(ra_s - ra_l)
-    // sin(A-B) = sin(A)cos(B) - cos(A)sin(B)
-    // cos(A-B) = cos(A)cos(B) + sin(A)sin(B)
-    // double sin_delta_ra = sin_ra_s * cos_ra_l - cos_ra_s * sin_ra_l;
-    // double cos_delta_ra = cos_ra_s * cos_ra_l + sin_ra_s * sin_ra_l;
-
-    // // Calculate the components of the position angle 'phi' using the robust formula
-    // // suggested in the original comments. 'phi' is the angle of the source
-    // // relative to the lens in the tangent plane.
-    // // x = cos(dec_s) * sin(ra_s - ra_l)
-    // // y = sin(dec_s) * cos(dec_l) - cos(dec_s) * sin(dec_l) * cos(ra_s - ra_l)
-    // double x = cos_dec_s * sin_delta_ra;
-    // double y = sin_dec_s * cos_dec_l - cos_dec_s * sin_dec_l * cos_delta_ra;
-
-    // double r_sq = x * x + y * y;
-
-    // if (r_sq == 0) {
-    //     // Lens and source are at the same position, angle is undefined.
-    //     // Return a default (e.g., angle of 0).
-    //     cos_2phi = 1.0;
-    //     sin_2phi = 0.0;
-    // } else {
-    //     // Use double-angle identities to find cos(2*phi) and sin(2*phi) directly from x and y.
-    //     // cos(phi) = x / sqrt(r_sq), sin(phi) = y / sqrt(r_sq)
-    //     // cos(2*phi) = cos^2(phi) - sin^2(phi) = (x^2 - y^2) / r_sq
-    //     // sin(2*phi) = 2 * sin(phi) * cos(phi) = (2 * x * y) / r_sq
-    //     cos_2phi = (x * x - y * y) / r_sq;
-    //     sin_2phi = (2.0 * x * y) / r_sq;
-    // }
-
-
-    double delta_ra_rad = acos(fmax(-1.0, fmin(1.0, cos_ra_s * cos_ra_l + sin_ra_s * sin_ra_l))); // More stable way to get delta_ra if cos(delta_ra) is known
-                                                                                           // This is not delta_ra directly.
-                                                                                           // It's simpler to use atan2(sin_delta_ra, cos_delta_ra)
-
-    // We need ra_l, dec_l, ra_s, dec_s. The inputs are sin/cos of these.
-    // It's more numerically stable to work with sin/cos as much as possible.
-    // delta_ra = ra_s - ra_l.
-    // sin(delta_ra) = sin_ra_s * cos_ra_l - cos_ra_s * sin_ra_l
-    // cos(delta_ra) = cos_ra_s * cos_ra_l + sin_ra_s * sin_ra_l
-
-    double sin_delta_ra = sin_ra_s * cos_ra_l - cos_ra_s * sin_ra_l;
-    double cos_delta_ra = cos_ra_s * cos_ra_l + sin_ra_s * sin_ra_l;
-
-    double x = cos_dec_s * sin_delta_ra;
-    double y = sin_dec_s * cos_dec_l - cos_dec_s * sin_dec_l * cos_delta_ra;
-
-    // phi is atan2(y,x). We need cos(2*phi) and sin(2*phi).
-    // cos(2a) = cos^2(a) - sin^2(a) = (x^2 - y^2) / (x^2 + y^2)
-    // sin(2a) = 2sin(a)cos(a) = 2xy / (x^2 + y^2)
-    double norm_sq = x * x + y * y;
-    if (norm_sq == 0) { // Should not happen if lens and source are not at the exact same RA/Dec
-        cos_2phi = 1.0; // Default to avoid division by zero, e.g., e_t = e_1
+    // Match CPU implementation exactly
+    double sin_ra_l_minus_ra_s = sin_ra_l * cos_ra_s - cos_ra_l * sin_ra_s;
+    double cos_ra_l_minus_ra_s = cos_ra_l * cos_ra_s + sin_ra_l * sin_ra_s;
+    double tan_phi_num = cos_dec_s * sin_dec_l - sin_dec_s * cos_dec_l * cos_ra_l_minus_ra_s;
+    double tan_phi_den = cos_dec_l * sin_ra_l_minus_ra_s;
+    
+    if (tan_phi_den == 0) {
+        cos_2phi = -1.0;
         sin_2phi = 0.0;
     } else {
-        cos_2phi = (x * x - y * y) / norm_sq;
-        sin_2phi = (2.0 * x * y) / norm_sq;
+        double tan_phi = tan_phi_num / tan_phi_den;
+        cos_2phi = (2.0 / (1.0 + tan_phi * tan_phi)) - 1.0;
+        sin_2phi = 2.0 * tan_phi / (1.0 + tan_phi * tan_phi);
     }
 }
 
 
 // Device function to calculate tangential shear e_t
 __device__ double calculate_et_gpu(double e1_s, double e2_s, double cos_2phi, double sin_2phi) {
-    return -e1_s * cos_2phi - e2_s * sin_2phi;
+    return -e1_s * cos_2phi + e2_s * sin_2phi;
 }
 
 
@@ -207,9 +161,8 @@ __global__ void precompute_kernel(
 
         // Calculate 3D distance squared
         double dist_3d_sq_ls = dist_3d_sq_gpu(
-            sin_ra_l_i, cos_ra_l_i, sin_dec_l_i, cos_dec_l_i, dcoml_i,
-            sin_ra_s_i, cos_ra_s_i, sin_dec_s_i, cos_dec_s_i, dcoms_i,
-            comoving);
+            sin_ra_l_i, cos_ra_l_i, sin_dec_l_i, cos_dec_l_i,
+            sin_ra_s_i, cos_ra_s_i, sin_dec_s_i, cos_dec_s_i);
 
         // Binning logic
         long i_bin = n_bins;
@@ -235,7 +188,7 @@ __global__ void precompute_kernel(
         }
         double sigma_crit = calculate_sigma_crit_gpu(
             dcoml_i, dcoms_i, zl_i, zs_i,
-            has_sigma_crit_eff, n_z_bins_l, sigma_crit_eff_l, i_l, z_bin_s_val);
+            has_sigma_crit_eff, n_z_bins_l, sigma_crit_eff_l, i_l, z_bin_s_val, comoving);
 
         if (sigma_crit == DBL_MAX) { // Or check against any other "invalid" value from calculate_sigma_crit_gpu
             continue;
