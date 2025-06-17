@@ -1,9 +1,21 @@
 [build-system]
-requires = ["setuptools>=77.0.0", "wheel", "Cython", "numpy", "torch"]
-build-backend = "setuptools.build_meta"
+requires = [
+    "scikit-build-core>=0.9.0",
+    "cython",
+    "numpy",
+    "torch",
+    "build"
+]
+build-backend = "scikit_build_core.build"
+
+[tool.scikit-build]
+# Help CMake find conda environment packages
+cmake.verbose = true
+cmake.build-type = "Release"
 
 [project]
 name = "dsigma"
+version = "0.1.0"
 requires-python = ">=3.9"
 authors = [{name = "Johannes U. Lange", email = "jlange@american.edu"},
            {name = "Song Huang"}]
@@ -13,7 +25,6 @@ license = "MIT"
 license-files = ["LICENSE"]
 dependencies = ["numpy", "astropy", "scipy", "scikit-learn", "astropy-healpix",
                 "tqdm"]
-dynamic = ["version"]
 
 [project.urls]
 Homepage = "https://github.com/johannesulf/dsigma"
@@ -21,8 +32,4 @@ Documentation = "https://dsigma.readthedocs.io"
 Repository = "https://github.com/johannesulf/dsigma.git"
 Issues = "https://github.com/johannesulf/dsigma/issues"
 Changelog = "https://github.com/johannesulf/dsigma/blob/main/CHANGELOG.md"
-
-[tool.setuptools]
-packages = ["dsigma", "dsigma.surveys"]
-dynamic.version = {attr = "dsigma.__version__"}
 

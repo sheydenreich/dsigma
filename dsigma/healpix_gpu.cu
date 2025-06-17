@@ -47,7 +47,7 @@ __device__ long ang2pix_ring_gpu(long nside, double theta, double phi) {
         const long jp = static_cast<long>(floor(nside * (0.5 + phi * INV_TWO_PI + z * 0.75))); // index in longitude
         const long jm = static_cast<long>(floor(nside * (0.5 + phi * INV_TWO_PI - z * 0.75))); // index in longitude
         const long ir = nside + 1 + jp - jm; // (int) (nside*(2.0-1.5*z));
-        const long k = static_cast<long>(fmod(ir + jp + jm, 2.0)); // (ir+jp+jm) % 2;
+        const long k = (ir + jp + jm) % 2; // Use integer modulo instead of fmod
         const long ip = (k == 0) ? (jp + jm) / 2 : (jp + jm + 1) / 2;
         const long ipix1 = ncap + (ir - 1) * 4 * nside + ip;
         return ipix1 % (12 * nside * nside) ; // Ensure it's within total Npix (e.g. for phi=2PI)

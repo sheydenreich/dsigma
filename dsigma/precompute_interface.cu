@@ -24,6 +24,18 @@
 #define DEG2RAD_Interface 0.017453292519943295
 #endif
 
+// // Custom atomicAdd for double precision (needed for older CUDA compute capabilities)
+// __device__ double atomicAddDouble(double* address, double val) {
+//     unsigned long long int* address_as_ull = (unsigned long long int*)address;
+//     unsigned long long int old = *address_as_ull, assumed;
+//     do {
+//         assumed = old;
+//         old = atomicCAS(address_as_ull, assumed,
+//                         __double_as_longlong(val + __longlong_as_double(assumed)));
+//     } while (assumed != old);
+//     return __longlong_as_double(old);
+// }
+
 // Helper macro for CUDA error checking
 #define CUDA_CHECK(err) { \
     cudaError_t err_ = (err); \
