@@ -122,14 +122,20 @@ if(NOT HEALPIX_INCLUDE_DIR OR NOT HEALPIX_LIBRARY)
     endif()
     
     if(NOT HEALPIX_INCLUDE_DIR OR NOT HEALPIX_LIBRARY)
-        message(FATAL_ERROR "Could not find healpix_cxx. Please install with: conda install -c conda-forge healpix_cxx")
+        message(WARNING "Could not find healpix_cxx. Building without HEALPix support.")
+        set(HEALPIX_FOUND 0)
     endif()
 endif()
 
-message(STATUS "Found HEALPix include directory: ${HEALPIX_INCLUDE_DIR}")
-message(STATUS "Found HEALPix library: ${HEALPIX_LIBRARY}")
-add_definitions(-DHEALPIX_FOUND=1)
-set(HEALPIX_FOUND 1)
+if(HEALPIX_INCLUDE_DIR AND HEALPIX_LIBRARY)
+    message(STATUS "Found HEALPix include directory: ${HEALPIX_INCLUDE_DIR}")
+    message(STATUS "Found HEALPix library: ${HEALPIX_LIBRARY}")
+    add_definitions(-DHEALPIX_FOUND=1)
+    set(HEALPIX_FOUND 1)
+else()
+    add_definitions(-DHEALPIX_FOUND=0)
+    set(HEALPIX_FOUND 0)
+endif()
 
 # --- Build the CUDA Extension (_precompute_cuda) ---
 cython_sources(CUDA_CYTHON_SRC dsigma/_precompute_cuda.pyx)
@@ -151,16 +157,21 @@ if(WIN32)
 endif()
 target_link_libraries(_precompute_cuda PRIVATE
     CUDA::cudart
-    ${HEALPIX_LIBRARY}
     ${Python_LIBRARIES}
 )
+if(HEALPIX_FOUND)
+    target_link_libraries(_precompute_cuda PRIVATE ${HEALPIX_LIBRARY})
+endif()
+
 target_include_directories(_precompute_cuda PRIVATE
     ${Python_INCLUDE_DIRS}
     ${CUDAToolkit_INCLUDE_DIRS}
     ${NumPy_INCLUDE_DIRS}
-    ${HEALPIX_INCLUDE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/dsigma
 )
+if(HEALPIX_FOUND)
+    target_include_directories(_precompute_cuda PRIVATE ${HEALPIX_INCLUDE_DIR})
+endif()
 
 # --- Build the regular Cython Extension (precompute_engine) ---
 cython_add_module(precompute_engine
