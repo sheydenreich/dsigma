@@ -187,8 +187,9 @@ __device__ void calculate_et_components_gpu(
         double tan_phi_sq = tan_phi * tan_phi;
         // cos(2a) = (1 - tan^2(a)) / (1 + tan^2(a))
         // sin(2a) = 2*tan(a) / (1 + tan^2(a))
-        // The original code used: cos_2phi = (2.0 / (1.0 + tan_phi * tan_phi)) - 1.0; which is (2 - (1+tan^2))/(1+tan^2) = (1-tan^2)/(1+tan^2)
-        cos_2phi = (1.0 - tan_phi_sq) / (1.0 + tan_phi_sq); // Corrected from (2.0 / (1+...)) - 1.0 for directness
+        // The original CPU code used: cos_2phi = (2.0 / (1.0 + tan_phi * tan_phi)) - 1.0
+        // Let's match the CPU implementation exactly
+        cos_2phi = (2.0 / (1.0 + tan_phi_sq)) - 1.0;
         sin_2phi = 2.0 * tan_phi / (1.0 + tan_phi_sq);
     }
 }

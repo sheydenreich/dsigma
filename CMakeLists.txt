@@ -145,7 +145,6 @@ add_library(_precompute_cuda SHARED
     dsigma/precompute_interface.cu
     dsigma/cuda_host_utils.cpp
     dsigma/healpix_gpu.cu
-    dsigma/kdtree_search_gpu.cu
 )
 set_property(TARGET _precompute_cuda PROPERTY CUDA_SEPARABLE_COMPILATION ON)
 
@@ -168,6 +167,7 @@ target_include_directories(_precompute_cuda PRIVATE
     ${CUDAToolkit_INCLUDE_DIRS}
     ${NumPy_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}/dsigma
+    ${CMAKE_CURRENT_SOURCE_DIR}/cudaKDTree
 )
 if(HEALPIX_FOUND)
     target_include_directories(_precompute_cuda PRIVATE ${HEALPIX_INCLUDE_DIR})

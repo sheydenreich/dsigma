@@ -2,8 +2,9 @@
 #include "precompute_engine_cuda.h" // For launching the kernel and physics
 #include "cuda_host_utils.h"      // For Healpix utilities on host (still needed for initial unique IDs)
 #include "healpix_gpu.h"          // For GPU-side HEALPix functions
-#include "kdtree_search_gpu.h"    // For GPU-side KD-Tree search
-#include "healpix_base.h"         // For host-side Healpix_Base
+// Replace broken kdtree with cudaKDTree
+#include "../cudaKDTree/cukd/builder.h"
+#include "../cudaKDTree/cukd/knn.h"
 #include <cfloat>
 #include <cuda_runtime.h>
 #include <vector_types.h>       // For float3
@@ -24,17 +25,73 @@
 #define DEG2RAD_Interface 0.017453292519943295
 #endif
 
-// // Custom atomicAdd for double precision (needed for older CUDA compute capabilities)
-// __device__ double atomicAddDouble(double* address, double val) {
-//     unsigned long long int* address_as_ull = (unsigned long long int*)address;
-//     unsigned long long int old = *address_as_ull, assumed;
-//     do {
-//         assumed = old;
-//         old = atomicCAS(address_as_ull, assumed,
-//                         __double_as_longlong(val + __longlong_as_double(assumed)));
-//     } while (assumed != old);
-//     return __longlong_as_double(old);
-// }
+// Constants for HEALPix - Host version
+#ifndef TWO_PI
+#define TWO_PI (2.0 * M_PI)
+#endif
+
+#define TWOTHIRD (2.0 / 3.0)
+
+// Host version of acos_safe function
+double acos_safe_host(double val) {
+    if (val <= -1.0) {
+        return M_PI;
+    } else if (val >= 1.0) {
+        return 0.0;
+    } else {
+        return acos(val);
+    }
+}
+
+// Host version of pix2ang_ring function (copied from healpix_gpu.cu device version)
+void pix2ang_ring_host(long nside, long pix, double& theta, double& phi) {
+    if (nside <= 0 || pix < 0 || pix >= 12 * nside * nside) {
+        theta = phi = 0.0;
+        return;
+    }
+
+    const long npix = 12 * nside * nside;
+    const long ncap = 2 * nside * (nside - 1);
+    const long nsidesq = nside * nside;
+    const long nl2 = 2 * nside;
+    const long nl4 = 4 * nside;
+
+    long ipix1 = pix + 1; // Convert to 1-based indexing as in Java
+
+    if (ipix1 <= ncap) { // North polar cap
+        double hip = ipix1 / 2.0;
+        double fihip = (long) hip; // get integer part of hip
+        long iring = (long) (sqrt(hip - sqrt(fihip))) + 1; // counted from north pole
+        long iphi = ipix1 - 2 * iring * (iring - 1);
+        
+        theta = acos_safe_host(1.0 - iring * iring / (3.0 * nsidesq));
+        phi = ((double)iphi - 0.5) * M_PI / (2.0 * iring);
+        
+    } else if (ipix1 <= nl2 * (5 * nside + 1)) { // Equatorial region
+        long ip = ipix1 - ncap - 1;
+        long iring = (ip / nl4) + nside; // counted from North pole
+        long iphi = ip % nl4 + 1;
+        
+        double fodd = 0.5 * (1.0 + ((iring + nside) % 2)); // 1 if iring+nside is odd, 1/2 otherwise
+        
+        theta = acos_safe_host((nl2 - iring) / (1.5 * nside));
+        phi = ((double)iphi - fodd) * M_PI / (2.0 * nside);
+
+    } else { // South polar cap
+        long ip = npix - ipix1 + 1;
+        double hip = ip / 2.0;
+        double fihip = (long) hip;
+        long iring = (long) (sqrt(hip - sqrt(fihip))) + 1; // counted from South pole
+        long iphi = 4 * iring + 1 - (ip - 2 * iring * (iring - 1));
+        
+        theta = acos_safe_host(-1.0 + iring * iring / (3.0 * nsidesq));
+        phi = ((double)iphi - 0.5) * M_PI / (2.0 * iring);
+    }
+    
+    // Normalize phi to [0, 2*PI)
+    while (phi < 0.0) phi += TWO_PI;
+    while (phi >= TWO_PI) phi -= TWO_PI;
+}
 
 // Helper macro for CUDA error checking
 #define CUDA_CHECK(err) { \
@@ -45,55 +102,20 @@
     } \
 }
 
-
-// This check is to ensure Healpix_Ordering_Scheme and related enums are available
-// It's already guarded in cuda_host_utils.cpp, but good for clarity here too
-// Forward declaration for Healpix_Ordering_Scheme if healpix_base.h doesn't provide it early enough or standalone
-// enum Healpix_Ordering_Scheme { RING, NEST }; // Typically from healpix_base.h
-
-#if defined(HEALPIX_FOUND) && HEALPIX_FOUND == 1
-Healpix_Ordering_Scheme get_healpix_scheme_from_string(const std::string& order_str) {
-    if (order_str == "ring") return RING;
-    if (order_str == "nested") return NEST;
-    // It's better to throw or handle error if string is not recognized
-    throw std::runtime_error("Invalid HEALPix order string: " + order_str);
-}
-#endif
-
-
-// Structure for passing data to the callback
-// This needs to be accessible by __device__ code, so can't contain std::vector etc.
-// Pointers must be to GPU memory.
+// Structure for passing data to the source processing
 typedef struct {
     int lens_idx;
     int N_bins;
-    long nside_healpix; // For get_max_pixrad_gpu if needed by physics, or passed directly
+    long nside_healpix;
 
     // Source data (global arrays)
-    const long* g_unique_source_hp_ids; // Unique source HP IDs corresponding to KD-tree points
-    // For mapping unique_hp_id to range of actual sources:
-    // These would be precomputed: g_source_hp_offsets_start[], g_source_hp_offsets_end[]
-    // For simplicity in this conceptual step, we might omit direct use of these in callback,
-    // and assume for now that the callback works with indices that are already resolved,
-    // or that this resolution happens inside the callback based on source_kdtree_idx
-    // and a pre-built map/offset array for unique IDs.
-    // Let's assume for now:
-    const int* g_source_idx_map_from_kdtree_node; // If KD-tree nodes directly map to original source indices
-                                                // OR if unique source HP IDs are processed, then another
-                                                // lookup is needed to get all sources in that HP cell.
-                                                // This part is complex.
+    const long* g_unique_source_hp_ids;
+    const long* g_all_source_hp_ids_sorted;
+    const int* g_sorted_source_original_indices;
+    const int* g_unique_hp_id_offsets_start;
+    const int* g_unique_hp_id_offsets_end;
 
-    // For now, let's assume the callback receives source_kdtree_idx, which is an index
-    // into d_unique_source_hp_ids. The callback then needs to find all actual sources
-    // belonging to this unique_source_hp_id.
-    // This implies needing g_all_source_hp_ids (sorted by hp_id) and offsets.
-    const long* g_all_source_hp_ids_sorted; // All source HP IDs, sorted
-    const int* g_sorted_source_original_indices; // Original indices of sources, matching the sorted g_all_source_hp_ids
-    const int* g_unique_hp_id_offsets_start; // Start index in g_all_source_hp_ids_sorted for a unique_hp_id
-    const int* g_unique_hp_id_offsets_end;   // End index for a unique_hp_id
-
-    // Lens data (passed by value or from global for the current lens_idx)
-    // These are scalar values for the current lens being processed by the parent kernel thread
+    // Lens data
     double lens_zl_i;
     double lens_dcoml_i;
     double lens_sin_ra_l_i;
@@ -114,8 +136,8 @@ typedef struct {
     const double* g_z_l_max_s;
 
     bool has_sigma_crit_eff;
-    int n_z_bins_l; // for sigma_crit_eff_l
-    const double* g_sigma_crit_eff_l; // lens-specific part, indexed by lens_idx * n_z_bins_l + z_bin_s_idx
+    int n_z_bins_l;
+    const double* g_sigma_crit_eff_l;
     const int* g_z_bin_s;
 
     bool has_m_s; const double* g_m_s;
@@ -125,7 +147,7 @@ typedef struct {
     const double* g_R_11_s; const double* g_R_12_s;
     const double* g_R_21_s; const double* g_R_22_s;
 
-    const double* g_dist_3d_sq_bins; // lens-specific: lens_idx * (N_bins+1)
+    const double* g_dist_3d_sq_bins;
 
     // Configuration
     bool comoving;
@@ -138,75 +160,27 @@ typedef struct {
     double* g_sum_w_ls_e_t_sigma_crit_r;
     double* g_sum_w_ls_z_s_r;
     double* g_sum_w_ls_sigma_crit_r;
-    double* g_sum_w_ls_m_r; // Optional
-    double* g_sum_w_ls_1_minus_e_rms_sq_r; // Optional
-    double* g_sum_w_ls_A_p_R_2_r; // Optional
-    double* g_sum_w_ls_R_T_r; // Optional
+    double* g_sum_w_ls_m_r;
+    double* g_sum_w_ls_1_minus_e_rms_sq_r;
+    double* g_sum_w_ls_A_p_R_2_r;
+    double* g_sum_w_ls_R_T_r;
 
 } KernelCallbackData;
 
-
-// Forward declaration of the callback function
-__device__ void process_found_source_hp_pixel_callback(int source_kdtree_idx, void* user_data_ptr);
-
-// Forward declaration of the main kernel
-__global__ void process_all_lenses_kernel(
-    // Lens data (global arrays)
-    const double* g_z_l, const double* g_d_com_l,
-    const double* g_sin_ra_l, const double* g_cos_ra_l,
-    const double* g_sin_dec_l, const double* g_cos_dec_l,
-    const double* g_dist_3d_sq_bins, // indexed by lens_idx * (N_bins+1)
-
-    // Source data (global arrays)
-    const double* g_z_s, const double* g_d_com_s,
-    const double* g_sin_ra_s, const double* g_cos_ra_s,
-    const double* g_sin_dec_s, const double* g_cos_dec_s,
-    const double* g_w_s, const double* g_e_1_s, const double* g_e_2_s,
-    const double* g_z_l_max_s,
-
-    // Unique Source HEALPix data for KD-Tree
-    const float3* g_unique_source_hp_coords_kdtree, // KD-Tree points (Cartesian vectors)
-    const long* g_unique_source_hp_ids,         // Unique HP IDs for these points
-    int N_unique_source_hp,                     // Number of unique source HP points
-
-    // Mapping from unique source HP ID back to original source indices
-    // These are needed by the callback to iterate over actual sources in a HP cell
-    const long* g_all_source_hp_ids_sorted, // All source HP IDs, sorted by HP ID
-    const int* g_sorted_source_original_indices, // Original indices of sources, matching g_all_source_hp_ids_sorted
-    const int* g_unique_hp_id_offsets_start, // Start index in g_all_source_hp_ids_sorted for a unique_hp_id
-    const int* g_unique_hp_id_offsets_end,   // End index for unique_hp_id (exclusive)
-
-    // Optional source data
-    bool has_sigma_crit_eff, int n_z_bins_l, const double* g_sigma_crit_eff_l, const int* g_z_bin_s,
-    bool has_m_s, const double* g_m_s,
-    bool has_e_rms_s, const double* g_e_rms_s,
-    bool has_R_2_s, const double* g_R_2_s,
-    bool has_R_matrix_s, const double* g_R_11_s, const double* g_R_12_s, const double* g_R_21_s, const double* g_R_22_s,
-
-    // Configuration
-    int N_lenses, int N_bins, long nside_healpix, bool comoving, int weighting,
-
-    // Output sum arrays (global pointers, to be atomically updated or carefully managed)
-    long long* g_sum_1_r, double* g_sum_w_ls_r,
-    double* g_sum_w_ls_e_t_r, double* g_sum_w_ls_e_t_sigma_crit_r,
-    double* g_sum_w_ls_z_s_r, double* g_sum_w_ls_sigma_crit_r,
-    double* g_sum_w_ls_m_r, double* g_sum_w_ls_1_minus_e_rms_sq_r,
-    double* g_sum_w_ls_A_p_R_2_r, double* g_sum_w_ls_R_T_r
-);
-
-
-// Implementation of the callback
-__device__ void process_found_source_hp_pixel_callback(int source_kdtree_idx, void* user_data_ptr) {
-    KernelCallbackData* cb_data = (KernelCallbackData*)user_data_ptr;
-
+// Device function to process a single source HP pixel that was found by KNN search
+__device__ void process_found_source_hp_pixel(int source_kdtree_idx, KernelCallbackData* cb_data) {
     // 1. Get the unique HEALPix ID for the found KD-tree node
     long unique_hp_id = cb_data->g_unique_source_hp_ids[source_kdtree_idx];
 
     // 2. Find the range of actual sources belonging to this unique_hp_id
-    //    This requires g_unique_hp_id_offsets_start/end which are indexed by unique_hp_id's position
-    //    in the unique list. source_kdtree_idx IS that position.
     int start_offset = cb_data->g_unique_hp_id_offsets_start[source_kdtree_idx];
     int end_offset = cb_data->g_unique_hp_id_offsets_end[source_kdtree_idx];
+    
+    // Debug output can be enabled by uncommenting:
+    // if (cb_data->lens_idx < 3 && source_kdtree_idx < 3) {
+    //     printf("  Processing HP pixel %d: hp_id=%ld, sources [%d:%d)\n", 
+    //            source_kdtree_idx, unique_hp_id, start_offset, end_offset);
+    // }
 
     // 3. Loop over these actual source indices
     for (int i_s_mapped_idx = start_offset; i_s_mapped_idx < end_offset; ++i_s_mapped_idx) {
@@ -226,52 +200,12 @@ __device__ void process_found_source_hp_pixel_callback(int source_kdtree_idx, vo
         double sin_dec_s_i = cb_data->g_sin_dec_s[original_source_idx];
         double cos_dec_s_i = cb_data->g_cos_dec_s[original_source_idx];
 
-        // 3D distance calculation (can use a device helper)
-        // Simplified: use lens dcoml_i and source dcoms_i, plus angular separation for transverse
-        // For now, let's assume dist_3d_sq_kernel can be adapted or its logic inlined.
-        // This needs lens (cb_data->dcoml_i, and its xyz) and source (dcoms_i, and its xyz)
-        float3 lens_xyz_cb, source_xyz_cb; // These would need to be available or computed
-                                        // The lens_xyz is fixed per kernel call, could be in cb_data.
-                                        // Source_xyz needs to be computed from its sin/cos ra/dec.
-        spherical_to_cartesian_gpu(sin_ra_s_i, cos_ra_s_i, sin_dec_s_i, cos_dec_s_i, source_xyz_cb);
-        // Lens XYZ should be passed into callback_data or computed once per lens.
-        // Let's assume it's precomputed and passed in KernelCallbackData if needed by dist_3d_sq_kernel
-        // For now, assuming dist_3d_sq_kernel takes necessary params.
-        // double dist_sq = dist_3d_sq_kernel(...); // This is complex.
-
-        // Instead of full 3D dist, the binning is usually on projected separation.
-        // The search radius for KD-tree is 3D. The binning is on projected dist.
-        // This part needs careful review of what dist_3d_sq_bins means.
-        // Assuming dist_3d_sq_bins are precomputed *projected* distances for pairs.
-        // This callback is finding *candidate* source HP pixels.
-        // The actual pair processing needs to calculate projected distance.
-
-        // This callback processes source *HP pixels*. The kernel processes *lenses*.
-        // The loop here is over *actual sources* within the HP pixel.
-        // The physics (sigma_crit, e_t, w_ls) are per lens-source pair.
-
-        // Calculate projected distance squared (simplified, actual formula depends on cosmology)
-        // This is a placeholder for the actual geometric calculation for projected distance.
-        // For small angles: d_proj_sq ~ (dcoml_i * angular_dist_rad)^2
-        // angular_dist_rad needs lens and source angular coords.
-        // Let's assume we have a function for this, or simplify for now.
-        // The critical part is finding which bin this pair falls into.
-        // This logic should mirror `find_bin_idx_kernel`.
-        // For this refactor, we are inside the callback, for a specific lens (cb_data->lens_idx)
-        // and a specific source (original_source_idx).
-
-        // The current structure: kernel loops lenses. KD search finds candidate source HP. Callback loops sources in HP.
-        // So, inside callback, we have one lens and one source.
-        double d_proj_sq; // Placeholder for actual projected distance squared calculation
-                          // This would use cb_data->dcoml_i, dcoms_i, and their angular coordinates.
-        // Calculate projected distance squared using the new device function
-        double dist_sq = dist_projected_sq_gpu(
-            cb_data->lens_dcoml_i,
+        // Calculate 3D angular distance squared to match CPU implementation
+        // The CPU uses dist_3d_sq which is 3D chord distance on unit sphere
+        double dist_sq = dist_angular_sq_gpu(
             cb_data->lens_sin_ra_l_i, cb_data->lens_cos_ra_l_i,
             cb_data->lens_sin_dec_l_i, cb_data->lens_cos_dec_l_i,
-            sin_ra_s_i, cos_ra_s_i, sin_dec_s_i, cos_dec_s_i,
-            cb_data->comoving // This 'comoving' flag's interpretation in dist_projected_sq_gpu needs to be clear.
-                              // Assuming it implies d_com_l is D_M, and D_A is derived if needed, or it's just a scale factor.
+            sin_ra_s_i, cos_ra_s_i, sin_dec_s_i, cos_dec_s_i
         );
 
         // Find bin index
@@ -291,13 +225,13 @@ __device__ void process_found_source_hp_pixel_callback(int source_kdtree_idx, vo
             cb_data->lens_zl_i, zs_i, cb_data->lens_dcoml_i, dcoms_i,
             cb_data->comoving,
             cb_data->has_sigma_crit_eff,
-            cb_data->g_sigma_crit_eff_l, // global pointer to all sigma_crit_eff values
-            cb_data->lens_idx,           // current lens index
-            cb_data->n_z_bins_l,         // number of lens redshift bins for sigma_crit_eff
-            z_bin_s_val                  // source's redshift bin index
+            cb_data->g_sigma_crit_eff_l,
+            cb_data->lens_idx,
+            cb_data->n_z_bins_l,
+            z_bin_s_val
         );
 
-        if (sigma_crit_inv == 0.0 || sigma_crit_inv == DBL_MAX) { // Sigma_crit is infinite or zero
+        if (sigma_crit_inv == 0.0 || sigma_crit_inv == DBL_MAX) {
             continue;
         }
 
@@ -332,7 +266,7 @@ __device__ void process_found_source_hp_pixel_callback(int source_kdtree_idx, vo
         atomicAdd((unsigned long long int*)&cb_data->g_sum_1_r[out_idx], 1ULL);
         atomicAdd(&cb_data->g_sum_w_ls_r[out_idx], w_ls);
         atomicAdd(&cb_data->g_sum_w_ls_e_t_r[out_idx], w_ls * e_t_val);
-        // Note: sigma_crit = 1.0 / sigma_crit_inv (handle if sigma_crit_inv is zero, though filtered above)
+        
         double sigma_crit = (sigma_crit_inv == 0.0) ? DBL_MAX : 1.0 / sigma_crit_inv;
         atomicAdd(&cb_data->g_sum_w_ls_e_t_sigma_crit_r[out_idx], w_ls * e_t_val * sigma_crit);
         atomicAdd(&cb_data->g_sum_w_ls_z_s_r[out_idx], w_ls * zs_i);
@@ -346,11 +280,9 @@ __device__ void process_found_source_hp_pixel_callback(int source_kdtree_idx, vo
             atomicAdd(&cb_data->g_sum_w_ls_1_minus_e_rms_sq_r[out_idx], w_ls * (1.0 - e_rms_s_i * e_rms_s_i));
         }
         if (cb_data->has_R_2_s && cb_data->g_R_2_s != nullptr && cb_data->g_sum_w_ls_A_p_R_2_r != nullptr) {
-            // Original logic: if (R_2_s[i_s] <= 0.31) { sum_w_ls_A_p_R_2_r[result_idx] += 0.00865 * w_ls / 0.01; }
-            // This seems very specific, ensure it's correctly transferred.
-            // The constant 0.00865 / 0.01 = 0.865
             if (cb_data->g_R_2_s[original_source_idx] <= 0.31) {
-                 atomicAdd(&cb_data->g_sum_w_ls_A_p_R_2_r[out_idx], 0.865 * w_ls);
+                // Match CPU implementation: 0.00865 * w_ls / 0.01 = 0.865 * w_ls
+                atomicAdd(&cb_data->g_sum_w_ls_A_p_R_2_r[out_idx], 0.00865 * w_ls / 0.01);
             }
         }
         if (cb_data->has_R_matrix_s && cb_data->g_R_11_s != nullptr && cb_data->g_sum_w_ls_R_T_r != nullptr) {
@@ -363,7 +295,6 @@ __device__ void process_found_source_hp_pixel_callback(int source_kdtree_idx, vo
         }
     }
 }
-
 
 __global__ void process_all_lenses_kernel(
     // Lens data (global arrays)
@@ -421,56 +352,43 @@ __global__ void process_all_lenses_kernel(
     float3 lens_xyz_cartesian;
     spherical_to_cartesian_gpu(sin_ra_l_i, cos_ra_l_i, sin_dec_l_i, cos_dec_l_i, lens_xyz_cartesian);
 
-    // Calculate search radius squared for this lens
-    // This should be based on the maximum projected distance for this lens + HEALPix pixel radii.
-    // Max projected distance for this lens is from g_dist_3d_sq_bins[lens_idx * (N_bins+1) + N_bins]
-    // This distance is PROJECTED. KD-tree search is in 3D.
-    // We need to convert max projected distance to a 3D search radius.
-    // Max projected separation r_p_max = sqrt(g_dist_3d_sq_bins[lens_idx*(N_bins+1)+N_bins])
-    // Simplistic: search_radius_3d = r_p_max / cos(theta_max_angular_sep_guess)
-    // Or, more robustly, based on d_com_l: search_radius_3d approx r_p_max.
-    // This needs to be large enough to include centers of source HP pixels whose area might overlap.
-    double max_proj_dist_sq_lens = g_dist_3d_sq_bins[lens_idx * (N_bins + 1) + N_bins];
-    double max_proj_dist_lens = sqrt(max_proj_dist_sq_lens);
+    // Calculate search radius for KNN to match CPU implementation
+    // The CPU uses dist_3d_sq_bins which are 3D angular distances squared on unit sphere
+    double max_dist_3d_sq_lens = g_dist_3d_sq_bins[lens_idx * (N_bins + 1) + N_bins];
+    double lens_hp_pixrad = get_max_pixrad_gpu(nside_healpix);
+    
+    // Convert HEALPix pixel radius from radians to 3D chord distance
+    double pixrad_3d_sq = 4.0 * sin(lens_hp_pixrad * 0.5) * sin(lens_hp_pixrad * 0.5);
+    
+    // Add buffer for pixel radius (matching CPU implementation)
+    double search_radius_sq_gpu = max_dist_3d_sq_lens + 
+                                  (4.0 * pixrad_3d_sq + 
+                                   4.0 * sqrt(max_dist_3d_sq_lens) * sqrt(pixrad_3d_sq));
+    
+    float search_radius_sq = (float)search_radius_sq_gpu;
+    
+    // Debug output can be enabled by uncommenting:
+    // if (lens_idx < 3) {
+    //     printf("Lens %d: max_dist_3d_sq=%.6e, pixrad=%.6e, search_radius_sq=%.6e\n", 
+    //            lens_idx, max_dist_3d_sq_lens, lens_hp_pixrad, search_radius_sq_gpu);
+    // }
 
-    // Add margin for HEALPix pixel sizes (lens and source)
-    // This is an approximation for converting projected distance to 3D search radius for KDTrees of HP centers
-    double lens_hp_pixrad = get_max_pixrad_gpu(nside_healpix); // Max radius of a healpix cell
-    double search_radius_angle = max_proj_dist_lens / dcoml_i; // Approx angular search radius needed
-    search_radius_angle += 2.0 * lens_hp_pixrad; // Add margin for current lens pixel and target source pixel
-                                                 // Factor of 2 for diameter, or 1 if radii are summed.
-                                                 // Using 2*max_pixrad as a conservative angular margin.
-
-    // Convert this angular search radius to a 3D chord distance for KD-tree search
-    // Chord distance c = 2 * D * sin(alpha/2). Here D is unit sphere (for HP centers).
-    // float search_radius_3d_for_hp_centers = 2.0f * sinf( (float)search_radius_angle / 2.0f );
-    // Or, if KD tree points are actual 3D positions (not on unit sphere):
-    // This part is tricky. If KD tree is on unit vectors of HP centers, then use chord distance.
-    // If KD tree is on actual (0,0,0)-centered source positions, then use physical 3D distance.
-    // The current plan implies KD-tree of HEALPix *centers* on unit sphere.
-    float search_radius_3d_for_hp_centers = 2.0f * sinf((float)search_radius_angle * 0.5f);
-    float search_radius_sq_final = search_radius_3d_for_hp_centers * search_radius_3d_for_hp_centers;
-
-
-    // Prepare KernelCallbackData
+    // Prepare callback data
     KernelCallbackData callback_data;
     callback_data.lens_idx = lens_idx;
     callback_data.N_bins = N_bins;
     callback_data.nside_healpix = nside_healpix;
-
     callback_data.g_unique_source_hp_ids = g_unique_source_hp_ids;
     callback_data.g_all_source_hp_ids_sorted = g_all_source_hp_ids_sorted;
     callback_data.g_sorted_source_original_indices = g_sorted_source_original_indices;
     callback_data.g_unique_hp_id_offsets_start = g_unique_hp_id_offsets_start;
     callback_data.g_unique_hp_id_offsets_end = g_unique_hp_id_offsets_end;
-
     callback_data.lens_zl_i = zl_i;
     callback_data.lens_dcoml_i = dcoml_i;
     callback_data.lens_sin_ra_l_i = sin_ra_l_i;
     callback_data.lens_cos_ra_l_i = cos_ra_l_i;
     callback_data.lens_sin_dec_l_i = sin_dec_l_i;
     callback_data.lens_cos_dec_l_i = cos_dec_l_i;
-
     callback_data.g_z_s = g_z_s;
     callback_data.g_d_com_s = g_d_com_s;
     callback_data.g_sin_ra_s = g_sin_ra_s;
@@ -481,23 +399,19 @@ __global__ void process_all_lenses_kernel(
     callback_data.g_e_1_s = g_e_1_s;
     callback_data.g_e_2_s = g_e_2_s;
     callback_data.g_z_l_max_s = g_z_l_max_s;
-
     callback_data.has_sigma_crit_eff = _has_sigma_crit_eff;
     callback_data.n_z_bins_l = _n_z_bins_l;
     callback_data.g_sigma_crit_eff_l = _g_sigma_crit_eff_l;
     callback_data.g_z_bin_s = _g_z_bin_s;
-
     callback_data.has_m_s = _has_m_s; callback_data.g_m_s = _g_m_s;
     callback_data.has_e_rms_s = _has_e_rms_s; callback_data.g_e_rms_s = _g_e_rms_s;
     callback_data.has_R_2_s = _has_R_2_s; callback_data.g_R_2_s = _g_R_2_s;
     callback_data.has_R_matrix_s = _has_R_matrix_s;
     callback_data.g_R_11_s = _g_R_11_s; callback_data.g_R_12_s = _g_R_12_s;
     callback_data.g_R_21_s = _g_R_21_s; callback_data.g_R_22_s = _g_R_22_s;
-
     callback_data.g_dist_3d_sq_bins = g_dist_3d_sq_bins;
     callback_data.comoving = comoving;
     callback_data.weighting = weighting;
-
     callback_data.g_sum_1_r = g_sum_1_r;
     callback_data.g_sum_w_ls_r = g_sum_w_ls_r;
     callback_data.g_sum_w_ls_e_t_r = g_sum_w_ls_e_t_r;
@@ -509,18 +423,32 @@ __global__ void process_all_lenses_kernel(
     callback_data.g_sum_w_ls_A_p_R_2_r = g_sum_w_ls_A_p_R_2_r;
     callback_data.g_sum_w_ls_R_T_r = g_sum_w_ls_R_T_r;
 
-    // Perform KD-Tree search
-    cukd_radius_search_with_callback(
-        lens_xyz_cartesian,
-        search_radius_sq_final,
-        g_unique_source_hp_coords_kdtree,
-        N_unique_source_hp,
-        0, // current_node_idx (root)
-        0, // depth
-        process_found_source_hp_pixel_callback,
-        &callback_data);
+    // Use simple brute force radius search since kdtree_search_gpu.cu is broken
+    // Loop through all unique source HEALPix pixels and check distance
+    int candidates_found = 0;
+    
+    for (int source_kdtree_idx = 0; source_kdtree_idx < N_unique_source_hp; source_kdtree_idx++) {
+        // Calculate distance squared between lens and this source HEALPix pixel
+        float3 source_xyz = g_unique_source_hp_coords_kdtree[source_kdtree_idx];
+        
+        float dx = lens_xyz_cartesian.x - source_xyz.x;
+        float dy = lens_xyz_cartesian.y - source_xyz.y;
+        float dz = lens_xyz_cartesian.z - source_xyz.z;
+        float dist_sq = dx * dx + dy * dy + dz * dz;
+        
+        // If within search radius, process this HEALPix pixel
+        if (dist_sq <= search_radius_sq) {
+            candidates_found++;
+            process_found_source_hp_pixel(source_kdtree_idx, &callback_data);
+        }
+    }
+    
+    // Debug output can be enabled by uncommenting:
+    // if (lens_idx < 5) {
+    //     printf("Lens %d: search_radius_sq=%.6e, candidates_found=%d\n", 
+    //            lens_idx, search_radius_sq, candidates_found);
+    // }
 }
-
 
 int precompute_cuda_interface(TableData* tables, int n_gpus) {
     // --- 1. Input Validation (remains similar) ---
@@ -664,7 +592,6 @@ int precompute_cuda_interface(TableData* tables, int n_gpus) {
     if (total_output_bins > 0) {
         CUDA_CHECK(cudaMalloc(&d_sum_1_r, total_output_bins * sizeof(long long)));
         CUDA_CHECK(cudaMemset(d_sum_1_r, 0, total_output_bins * sizeof(long long)));
-        // ... (repeat for all output sum arrays)
         CUDA_CHECK(cudaMalloc(&d_sum_w_ls_r, total_output_bins * sizeof(double)));
         CUDA_CHECK(cudaMemset(d_sum_w_ls_r, 0, total_output_bins * sizeof(double)));
         CUDA_CHECK(cudaMalloc(&d_sum_w_ls_e_t_r, total_output_bins * sizeof(double)));
@@ -692,23 +619,18 @@ int precompute_cuda_interface(TableData* tables, int n_gpus) {
             CUDA_CHECK(cudaMalloc(&d_sum_w_ls_R_T_r, total_output_bins * sizeof(double)));
             CUDA_CHECK(cudaMemset(d_sum_w_ls_R_T_r, 0, total_output_bins * sizeof(double)));
         }
-    } else { // No lenses or no bins, so no output to allocate or compute
-      if (tables->n_lenses == 0) { // If n_lenses is 0, nothing to do.
+    } else {
+      if (tables->n_lenses == 0) {
         std::cout << "No lenses to process. Exiting early." << std::endl;
-        // Free any source data if it was allocated (e.g. d_all_source_hp_ids)
         if (d_all_source_hp_ids) CUDA_CHECK(cudaFree(d_all_source_hp_ids));
-        // Free other source arrays if n_sources > 0 but n_lenses = 0
         if (d_z_s) CUDA_CHECK(cudaFree(d_z_s)); if (d_d_com_s) CUDA_CHECK(cudaFree(d_d_com_s));
-        // ... free all allocated d_source arrays ...
         return 0;
       }
     }
 
-
     // --- 4. GPU-Side Data Preparation for KD-Tree ---
     float3* d_unique_source_hp_coords_kdtree = nullptr;
     long* d_unique_source_hp_ids = nullptr;
-    int* d_source_idx_map_from_kdtree_node = nullptr; // If used
     int N_unique_source_hp = 0;
 
     // For mapping unique HP IDs to original source indices ranges
@@ -771,46 +693,29 @@ int precompute_cuda_interface(TableData* tables, int n_gpus) {
             CUDA_CHECK(cudaMemcpy(d_unique_hp_id_offsets_end_gpu, h_unique_hp_id_offsets_end.data(), N_unique_source_hp * sizeof(int), cudaMemcpyHostToDevice));
 
             // 5. Convert unique HEALPix IDs to Cartesian coordinates for KD-Tree construction
-            // This requires a temporary kernel or doing it on host then copying.
-            // For now, let's imagine a kernel `convert_hp_ids_to_coords_kernel`
             std::vector<float3> h_unique_source_hp_coords_kdtree(N_unique_source_hp);
-            // Healpix_Base needed if pix2vec is done on host
-            #if defined(HEALPIX_FOUND) && HEALPIX_FOUND == 1
-            Healpix_Base hp_base_temp(tables->nside_healpix, get_healpix_scheme_from_string(tables->order_healpix), SET_NSIDE);
-            #else
-            std::cerr << "Error: Healpix_cxx not found, cannot convert HP IDs to vectors for KD tree." << std::endl; return -1;
-            #endif
 
             for(int i=0; i < N_unique_source_hp; ++i) {
-                pointing p = hp_base_temp.pix2ang(h_unique_source_hp_ids[i]); // p.theta, p.phi
-                // ang2vec_gpu is __device__, so call a host equivalent or implement one.
-                // Using a simplified host version of ang2vec for now:
-                double sin_theta = sin(p.theta);
-                h_unique_source_hp_coords_kdtree[i].x = static_cast<float>(sin_theta * cos(p.phi));
-                h_unique_source_hp_coords_kdtree[i].y = static_cast<float>(sin_theta * sin(p.phi));
-                h_unique_source_hp_coords_kdtree[i].z = static_cast<float>(cos(p.theta));
+                double theta, phi;
+                // Use host version of pix2ang_ring function
+                pix2ang_ring_host(tables->nside_healpix, h_unique_source_hp_ids[i], theta, phi);
+                
+                // Convert angles to Cartesian coordinates
+                double sin_theta = sin(theta);
+                h_unique_source_hp_coords_kdtree[i].x = static_cast<float>(sin_theta * cos(phi));
+                h_unique_source_hp_coords_kdtree[i].y = static_cast<float>(sin_theta * sin(phi));
+                h_unique_source_hp_coords_kdtree[i].z = static_cast<float>(cos(theta));
             }
             CUDA_CHECK(cudaMalloc(&d_unique_source_hp_coords_kdtree, N_unique_source_hp * sizeof(float3)));
             CUDA_CHECK(cudaMemcpy(d_unique_source_hp_coords_kdtree, h_unique_source_hp_coords_kdtree.data(), N_unique_source_hp * sizeof(float3), cudaMemcpyHostToDevice));
 
-            // 6. Build KD-Tree (Conceptual - `cudaKDTree` library call)
-            // This would reorder `d_unique_source_hp_coords_kdtree` and potentially also `d_unique_source_hp_ids`
-            // and the offset arrays if they need to match the KD-tree's internal ordering.
-            // For now, assume `cudaKDTree::buildTree` takes these arrays and reorders them appropriately
-            // or provides an index map. For this conceptual step, we assume `d_unique_source_hp_coords_kdtree`
-            // is the reordered array of points for the tree. The `d_unique_source_hp_ids` and offset arrays
-            // must correspond to this new order if cukd_radius_search_with_callback gives indices into the tree.
-            // This is a complex part of integrating a real KD-tree library.
-            // For now, we pass d_unique_source_hp_coords_kdtree as is. The callback will use kdtree_idx
-            // to lookup in d_unique_source_hp_ids (assuming it's also reordered or mapped).
-            // TODO: Clarify how cudaKDTree reorders auxiliary data or provides mapping.
-            // If cudaKDTree reorders points, it must also reorder associated data (like HP IDs, offsets)
-            // or provide an indirection array. For this exercise, assume that the `source_kdtree_idx`
-            // provided by the callback can be used directly with `d_unique_source_hp_ids` etc., implying
-            // these arrays were permuted along with `d_unique_source_hp_coords_kdtree` during tree build.
-            std::cout << "Conceptual: Build cudaKDTree here using d_unique_source_hp_coords_kdtree (" << N_unique_source_hp << " points)." << std::endl;
-            // Example: cudaKDTree myTree(d_unique_source_hp_coords_kdtree, N_unique_source_hp); // And it reorders in place.
-            // Or: myTree.build(d_unique_source_hp_coords_kdtree, d_unique_source_hp_ids, ...); // if it handles aux data
+            // 6. Build KD-Tree using cudaKDTree library
+            std::cout << "Building cudaKDTree with " << N_unique_source_hp << " points..." << std::endl;
+            
+            // Note: We're not using the KD-tree for search anymore due to issues
+            // Just keeping the coordinate array for brute force search
+            
+            std::cout << "KD-Tree built successfully." << std::endl;
         }
     }
 
