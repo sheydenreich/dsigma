@@ -129,4 +129,39 @@ __device__ void cross_gpu(const float3& a, const float3& b, float3& result);
  */
 __device__ double acos_safe_gpu(double val);
 
+/**
+ * @brief Converts a HEALPix pixel index in the RING scheme to angular coordinates.
+ * @param nside HEALPix resolution parameter.
+ * @param pix HEALPix pixel index.
+ * @param theta Output polar angle (colatitude) in radians.
+ * @param phi Output azimuthal angle in radians.
+ */
+__device__ void pix2ang_ring_gpu(long nside, long pix, double& theta, double& phi);
+
+/**
+ * @brief Converts a HEALPix pixel index in the RING scheme to longitude/latitude coordinates.
+ * @param nside HEALPix resolution parameter.
+ * @param pix HEALPix pixel index.
+ * @param lon Output longitude in degrees (0 to 360).
+ * @param lat Output latitude in degrees (-90 to 90).
+ */
+__device__ void pix2lonlat_ring_gpu(long nside, long pix, double& lon, double& lat);
+
+/**
+ * @brief Gets the pixel resolution in degrees for a given nside.
+ * @param nside HEALPix resolution parameter.
+ * @return Pixel resolution in degrees.
+ */
+__device__ __forceinline__ double get_pixel_resolution_degrees_gpu(long nside) {
+    if (nside <= 0) return 180.0; // Error case
+    // HEALPix pixel solid angle is 4*PI / (12*nside^2) steradians
+    // Convert to degrees: sqrt(solid_angle) * (180/PI)
+    // Approximation: pixel angular size ~ sqrt(4*PI / (12*nside^2)) * 180/PI
+    //                                  = sqrt(PI/3) / nside * 180/PI
+    //                                  ≈ 60 / nside degrees
+    const double PI_OVER_180 = PI / 180.0;
+    const double solid_angle = 4.0 * PI / (12.0 * static_cast<double>(nside) * nside);
+    return sqrt(solid_angle) * 180.0 / PI;
+}
+
 #endif // DSIGMA_HEALPIX_GPU_H
