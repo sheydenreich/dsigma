@@ -164,4 +164,23 @@ __device__ __forceinline__ double get_pixel_resolution_degrees_gpu(long nside) {
     return sqrt(solid_angle) * 180.0 / PI;
 }
 
+/**
+ * @brief Performs a cone search to find all HEALPix pixels within a given radius
+ *        of a longitude/latitude position using the RING scheme.
+ * @param nside HEALPix resolution parameter.
+ * @param lon_deg Longitude in degrees.
+ * @param lat_deg Latitude in degrees.
+ * @param radius_deg Search radius in degrees.
+ * @param result_pixels Output array to store found pixel indices.
+ * @return Number of pixels found (size of result_pixels filled).
+ */
+__device__ int cone_search_ring_gpu(long nside, double lon_deg, double lat_deg, double radius_deg, long* result_pixels);
+
+/**
+ * @brief Gets the pixel area in steradians for a given nside.
+ * @param nside HEALPix resolution parameter.
+ * @return Pixel area in steradians.
+ */
+__device__ double get_pixel_area_steradians_gpu(long nside);
+
 #endif // DSIGMA_HEALPIX_GPU_H
