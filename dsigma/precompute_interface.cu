@@ -3,8 +3,11 @@
 #include "cuda_host_utils.h"      // For Healpix utilities on host (still needed for initial unique IDs)
 #include "healpix_gpu.h"          // For GPU-side HEALPix functions
 // Replace broken kdtree with cudaKDTree
+#include "../cudaKDTree/cukd/common.h"
+#include "../cudaKDTree/cukd/data.h"
 #include "../cudaKDTree/cukd/builder.h"
 #include "../cudaKDTree/cukd/knn.h"
+#include "../cudaKDTree/cukd/box.h"
 #include <cfloat>
 #include <cuda_runtime.h>
 #include <vector_types.h>       // For float3
@@ -31,6 +34,26 @@
 #endif
 
 #define TWOTHIRD (2.0 / 3.0)
+
+// Custom data structures for KD-tree with index mapping
+struct PointWithIndex {
+    float3 coord;
+    int original_index;
+};
+
+// Define data traits for our custom point type
+struct PointWithIndexTraits : public cukd::default_data_traits<float3> {
+    using point_t = float3;
+    using data_t = PointWithIndex;
+    
+    static inline __host__ __device__ const float3& get_point(const PointWithIndex& data) { 
+        return data.coord; 
+    }
+    
+    static inline __host__ __device__ float get_coord(const PointWithIndex& data, int dim) {
+        return cukd::get_coord(data.coord, dim);
+    }
+};
 
 // Host version of acos_safe function
 double acos_safe_host(double val) {
@@ -296,6 +319,101 @@ __device__ void process_found_source_hp_pixel(int source_kdtree_idx, KernelCallb
     }
 }
 
+// Helper function to calculate maximum number of expected pixels in search radius
+__device__ int calculate_max_k_for_search(long nside, float search_radius_sq) {
+    // Get the area of a single HEALPix pixel in steradians
+    double pixel_area = get_pixel_area_steradians_gpu(nside);
+    
+    // The area covered by the search radius is pi * search_radius_sq
+    // Note: search_radius_sq is the 3D chord distance squared, not angular radius squared
+    // For small angles, chord distance ≈ angular distance, so this is a reasonable approximation
+    double search_area = M_PI * static_cast<double>(search_radius_sq);
+    
+    // Calculate theoretical maximum number of pixels
+    double theoretical_max = search_area / pixel_area;
+    
+    // Add safety factor of 1.2x to account for:
+    // 1. Approximation errors in chord vs angular distance
+    // 2. Pixel boundary effects
+    // 3. Non-uniform pixel distribution
+    int max_k = static_cast<int>(theoretical_max * 1.2) + 10; // +10 for extra safety
+    
+    // Ensure reasonable minimum bound
+    if (max_k < 32) max_k = 32; // Minimum reasonable value
+    // No maximum cap - let it grow as needed
+    
+    return max_k;
+}
+
+// Device function to perform KD-tree radius search and process all found candidates
+__device__ void kdtree_radius_search_and_process(
+    float3 query_point,
+    float search_radius_sq,
+    const float3* d_kdtree_points,
+    int num_kdtree_points,
+    const cukd::box_t<float3>* d_world_bounds,
+    const int* d_kdtree_to_original_mapping,
+    KernelCallbackData* callback_data
+) {
+    // Calculate appropriate max_k based on HEALPix geometry
+    int max_k = calculate_max_k_for_search(callback_data->nside_healpix, search_radius_sq);
+    
+    // Use a reasonable compile-time maximum that won't cause compilation issues
+    // If users need more, they should reduce nside or use multiple passes
+    const int COMPILE_TIME_MAX_K = 1024;
+    
+    // Check if we need more capacity than our compile-time limit
+    if (max_k > COMPILE_TIME_MAX_K) {
+        // Warning: suggest solutions for handling large neighborhoods
+        if (callback_data->lens_idx < 5) { // Only print for first few lenses to avoid spam
+            printf("WARNING: Lens %d needs max_k=%d but COMPILE_TIME_MAX_K=%d.\n",
+                   callback_data->lens_idx, max_k, COMPILE_TIME_MAX_K);
+            printf("RECOMMENDATION: Reduce nside from %ld to approximately %ld for better performance.\n",
+                   callback_data->nside_healpix, 
+                   (long)(callback_data->nside_healpix * sqrt((double)COMPILE_TIME_MAX_K / max_k)));
+            printf("ALTERNATIVE: If you need full precision, consider processing in multiple passes or increasing COMPILE_TIME_MAX_K in source code.\n");
+        }
+    }
+    
+    // Create candidate list with reasonable compile-time maximum
+    cukd::FixedCandidateList<COMPILE_TIME_MAX_K> candidates(sqrtf(search_radius_sq));
+    
+    // Perform KNN search with radius cutoff
+    cukd::stackBased::knn(candidates, query_point, *d_world_bounds, d_kdtree_points, num_kdtree_points);
+    
+    // Process all found candidates within the radius
+    int processed_count = 0;
+    for (int i = 0; i < COMPILE_TIME_MAX_K; i++) {
+        int kdtree_index = candidates.get_pointID(i);
+        if (kdtree_index < 0) break; // No more valid candidates
+        
+        float dist_sq = candidates.get_dist2(i);
+        if (dist_sq <= search_radius_sq) {
+            // Map from KD-tree index back to original unique HP pixel index
+            int original_index = d_kdtree_to_original_mapping[kdtree_index];
+            process_found_source_hp_pixel(original_index, callback_data);
+            processed_count++;
+        }
+    }
+    
+    // Safety check: verify we didn't hit our compile-time limit when we needed more
+    if (processed_count >= COMPILE_TIME_MAX_K && max_k > COMPILE_TIME_MAX_K) {
+        // This indicates we hit the compile-time limit but actually needed more capacity
+        printf("ERROR: Lens %d hit COMPILE_TIME_MAX_K limit! Processed %d pixels (stopped at limit), estimated need was %d pixels.\n",
+               callback_data->lens_idx, processed_count, max_k);
+        printf("SOLUTION: Reduce nside from %ld to approximately %ld to avoid truncation.\n",
+               callback_data->nside_healpix,
+               (long)(callback_data->nside_healpix * sqrt((double)COMPILE_TIME_MAX_K / max_k)));
+        printf("WARNING: Results may be incomplete due to truncation!\n");
+        // In a production system, you might want to set an error flag in callback_data
+    } else if (processed_count >= max_k) {
+        // This indicates our geometric estimate was too low (should be rare with 1.2x + 10 buffer)
+        printf("WARNING: Lens %d exceeded geometric max_k estimate! Processed %d pixels, estimated %d pixels.\n",
+               callback_data->lens_idx, processed_count, max_k);
+        printf("Consider reporting this case - the geometric estimation may need refinement.\n");
+    }
+}
+
 __global__ void process_all_lenses_kernel(
     // Lens data (global arrays)
     const double* g_z_l, const double* g_d_com_l,
@@ -314,6 +432,8 @@ __global__ void process_all_lenses_kernel(
     const float3* g_unique_source_hp_coords_kdtree,
     const long* g_unique_source_hp_ids,
     int N_unique_source_hp,
+    const cukd::box_t<float3>* g_world_bounds,
+    const int* g_kdtree_to_original_mapping,
 
     // Mapping from unique source HP ID back to original source indices
     const long* g_all_source_hp_ids_sorted,
@@ -423,25 +543,16 @@ __global__ void process_all_lenses_kernel(
     callback_data.g_sum_w_ls_A_p_R_2_r = g_sum_w_ls_A_p_R_2_r;
     callback_data.g_sum_w_ls_R_T_r = g_sum_w_ls_R_T_r;
 
-    // Use simple brute force radius search since kdtree_search_gpu.cu is broken
-    // Loop through all unique source HEALPix pixels and check distance
-    int candidates_found = 0;
-    
-    for (int source_kdtree_idx = 0; source_kdtree_idx < N_unique_source_hp; source_kdtree_idx++) {
-        // Calculate distance squared between lens and this source HEALPix pixel
-        float3 source_xyz = g_unique_source_hp_coords_kdtree[source_kdtree_idx];
-        
-        float dx = lens_xyz_cartesian.x - source_xyz.x;
-        float dy = lens_xyz_cartesian.y - source_xyz.y;
-        float dz = lens_xyz_cartesian.z - source_xyz.z;
-        float dist_sq = dx * dx + dy * dy + dz * dz;
-        
-        // If within search radius, process this HEALPix pixel
-        if (dist_sq <= search_radius_sq) {
-            candidates_found++;
-            process_found_source_hp_pixel(source_kdtree_idx, &callback_data);
-        }
-    }
+    // Use KD-tree radius search for efficient spatial querying
+    kdtree_radius_search_and_process(
+        lens_xyz_cartesian,
+        search_radius_sq,
+        g_unique_source_hp_coords_kdtree,
+        N_unique_source_hp,
+        g_world_bounds,
+        g_kdtree_to_original_mapping,
+        &callback_data
+    );
     
     // Debug output can be enabled by uncommenting:
     // if (lens_idx < 5) {
@@ -632,6 +743,11 @@ int precompute_cuda_interface(TableData* tables, int n_gpus) {
     float3* d_unique_source_hp_coords_kdtree = nullptr;
     long* d_unique_source_hp_ids = nullptr;
     int N_unique_source_hp = 0;
+    cukd::box_t<float3>* d_world_bounds = nullptr;
+    
+    // Device pointer for custom data structures needed for KD-tree
+    PointWithIndex* d_points_with_indices = nullptr;
+    int* d_kdtree_to_original_mapping = nullptr;
 
     // For mapping unique HP IDs to original source indices ranges
     long* d_all_source_hp_ids_sorted_gpu = nullptr;
@@ -693,7 +809,8 @@ int precompute_cuda_interface(TableData* tables, int n_gpus) {
             CUDA_CHECK(cudaMemcpy(d_unique_hp_id_offsets_end_gpu, h_unique_hp_id_offsets_end.data(), N_unique_source_hp * sizeof(int), cudaMemcpyHostToDevice));
 
             // 5. Convert unique HEALPix IDs to Cartesian coordinates for KD-Tree construction
-            std::vector<float3> h_unique_source_hp_coords_kdtree(N_unique_source_hp);
+            // We need to store both coordinates and original indices to track the mapping after KD-tree reordering
+            std::vector<PointWithIndex> h_points_with_indices(N_unique_source_hp);
 
             for(int i=0; i < N_unique_source_hp; ++i) {
                 double theta, phi;
@@ -702,18 +819,55 @@ int precompute_cuda_interface(TableData* tables, int n_gpus) {
                 
                 // Convert angles to Cartesian coordinates
                 double sin_theta = sin(theta);
-                h_unique_source_hp_coords_kdtree[i].x = static_cast<float>(sin_theta * cos(phi));
-                h_unique_source_hp_coords_kdtree[i].y = static_cast<float>(sin_theta * sin(phi));
-                h_unique_source_hp_coords_kdtree[i].z = static_cast<float>(cos(theta));
+                h_points_with_indices[i].coord.x = static_cast<float>(sin_theta * cos(phi));
+                h_points_with_indices[i].coord.y = static_cast<float>(sin_theta * sin(phi));
+                h_points_with_indices[i].coord.z = static_cast<float>(cos(theta));
+                h_points_with_indices[i].original_index = i;
             }
+            
+            // Allocate device memory for the points with indices
+            PointWithIndex* d_points_with_indices;
+            CUDA_CHECK(cudaMalloc(&d_points_with_indices, N_unique_source_hp * sizeof(PointWithIndex)));
+            CUDA_CHECK(cudaMemcpy(d_points_with_indices, h_points_with_indices.data(), N_unique_source_hp * sizeof(PointWithIndex), cudaMemcpyHostToDevice));
+            
+            // For backward compatibility, we still need the coordinate array for the current kernel
+            // Extract just the coordinates
+            std::vector<float3> h_unique_source_hp_coords_kdtree(N_unique_source_hp);
+            for(int i=0; i < N_unique_source_hp; ++i) {
+                h_unique_source_hp_coords_kdtree[i] = h_points_with_indices[i].coord;
+            }
+            
             CUDA_CHECK(cudaMalloc(&d_unique_source_hp_coords_kdtree, N_unique_source_hp * sizeof(float3)));
             CUDA_CHECK(cudaMemcpy(d_unique_source_hp_coords_kdtree, h_unique_source_hp_coords_kdtree.data(), N_unique_source_hp * sizeof(float3), cudaMemcpyHostToDevice));
 
             // 6. Build KD-Tree using cudaKDTree library
             std::cout << "Building cudaKDTree with " << N_unique_source_hp << " points..." << std::endl;
             
-            // Note: We're not using the KD-tree for search anymore due to issues
-            // Just keeping the coordinate array for brute force search
+            // d_points_with_indices is already set from the allocation above
+            
+            // Allocate device memory for world bounds
+            CUDA_CHECK(cudaMalloc(&d_world_bounds, sizeof(cukd::box_t<float3>)));
+            
+            // Build the KD-tree in-place on the points with indices array
+            // This will rearrange the array to reflect the tree structure and compute world bounds
+            cukd::buildTree<PointWithIndex, PointWithIndexTraits>(d_points_with_indices, N_unique_source_hp, d_world_bounds);
+            CUDA_CHECK(cudaDeviceSynchronize());
+            
+            // Copy back the reordered coordinates to maintain backward compatibility
+            std::vector<PointWithIndex> h_reordered_points(N_unique_source_hp);
+            CUDA_CHECK(cudaMemcpy(h_reordered_points.data(), d_points_with_indices, N_unique_source_hp * sizeof(PointWithIndex), cudaMemcpyDeviceToHost));
+            
+            // Create a mapping from KD-tree index to original index and update coordinates
+            std::vector<int> h_kdtree_to_original_mapping(N_unique_source_hp);
+            for(int i=0; i < N_unique_source_hp; ++i) {
+                h_unique_source_hp_coords_kdtree[i] = h_reordered_points[i].coord;
+                h_kdtree_to_original_mapping[i] = h_reordered_points[i].original_index;
+            }
+            CUDA_CHECK(cudaMemcpy(d_unique_source_hp_coords_kdtree, h_unique_source_hp_coords_kdtree.data(), N_unique_source_hp * sizeof(float3), cudaMemcpyHostToDevice));
+            
+            // Create device array for the index mapping
+            CUDA_CHECK(cudaMalloc(&d_kdtree_to_original_mapping, N_unique_source_hp * sizeof(int)));
+            CUDA_CHECK(cudaMemcpy(d_kdtree_to_original_mapping, h_kdtree_to_original_mapping.data(), N_unique_source_hp * sizeof(int), cudaMemcpyHostToDevice));
             
             std::cout << "KD-Tree built successfully." << std::endl;
         }
@@ -729,7 +883,7 @@ int precompute_cuda_interface(TableData* tables, int n_gpus) {
             d_z_l, d_d_com_l, d_sin_ra_l, d_cos_ra_l, d_sin_dec_l, d_cos_dec_l, d_dist_3d_sq_bins,
             d_z_s, d_d_com_s, d_sin_ra_s, d_cos_ra_s, d_sin_dec_s, d_cos_dec_s,
             d_w_s, d_e_1_s, d_e_2_s, d_z_l_max_s,
-            d_unique_source_hp_coords_kdtree, d_unique_source_hp_ids, N_unique_source_hp,
+            d_unique_source_hp_coords_kdtree, d_unique_source_hp_ids, N_unique_source_hp, d_world_bounds, d_kdtree_to_original_mapping,
             d_all_source_hp_ids_sorted_gpu, d_sorted_source_original_indices_gpu,
             d_unique_hp_id_offsets_start_gpu, d_unique_hp_id_offsets_end_gpu,
             tables->has_sigma_crit_eff, tables->n_z_bins_l, d_sigma_crit_eff_l, d_z_bin_s,
@@ -786,6 +940,9 @@ int precompute_cuda_interface(TableData* tables, int n_gpus) {
         // Free KD-tree related GPU arrays
         if(d_unique_source_hp_coords_kdtree) CUDA_CHECK(cudaFree(d_unique_source_hp_coords_kdtree));
         if(d_unique_source_hp_ids) CUDA_CHECK(cudaFree(d_unique_source_hp_ids));
+        if(d_world_bounds) CUDA_CHECK(cudaFree(d_world_bounds));
+        if(d_points_with_indices) CUDA_CHECK(cudaFree(d_points_with_indices));
+        if(d_kdtree_to_original_mapping) CUDA_CHECK(cudaFree(d_kdtree_to_original_mapping));
         // if(d_source_idx_map_from_kdtree_node) CUDA_CHECK(cudaFree(d_source_idx_map_from_kdtree_node));
         if(d_all_source_hp_ids_sorted_gpu) CUDA_CHECK(cudaFree(d_all_source_hp_ids_sorted_gpu));
         if(d_sorted_source_original_indices_gpu) CUDA_CHECK(cudaFree(d_sorted_source_original_indices_gpu));
