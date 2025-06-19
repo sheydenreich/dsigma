@@ -64,14 +64,35 @@ __device__ int find_bin_idx_gpu(
     int N_bins) {
     // Bins are [bin_edges[0], bin_edges[1]), [bin_edges[1], bin_edges[2]), ..., [bin_edges[N-1], bin_edges[N])
     // current_lens_dist_bins has N_bins+1 elements (edges).
-    // This is a linear search; for many bins, binary search (e.g. lower_bound) would be better.
-    for (int k = 0; k < N_bins; ++k) {
-        if (dist_sq >= current_lens_dist_bins[k] && dist_sq < current_lens_dist_bins[k+1]) {
-            return k;
+    // Perform a binary search.
+    if (dist_sq < current_lens_dist_bins[0]) return -1;
+    if (dist_sq >= current_lens_dist_bins[N_bins]) return -1;
+
+
+    int low = 0;
+    int high = N_bins;
+    int mid;
+
+    while (low < high) {
+        // Calculate mid-point to avoid potential overflow
+        mid = low + (high - low) / 2;
+
+        if (dist_sq >= current_lens_dist_bins[mid]) {
+            // The value is in the current bin or a higher one.
+            // Move the lower bound up.
+            low = mid + 1;
+        } else {
+            // The value is in a lower bin.
+            // Move the upper bound down.
+            high = mid;
         }
     }
-    return -1; // Not in any bin
+
+    // The loop terminates when low == high. 'low' now points to the first element
+    // in bin_edges that is greater than x. The bin index is therefore low - 1.
+    return low - 1;
 }
+
 
 // Device function to calculate sigma_crit_inverse
 __device__ double calculate_sigma_crit_inv_gpu(
