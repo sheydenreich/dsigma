@@ -541,7 +541,7 @@ def precompute(
                 sum_w_ls_z_s_r_np,
                 sum_w_ls_m_r_np, sum_w_ls_1_minus_e_rms_sq_r_np,
                 sum_w_ls_A_p_R_2_r_np, sum_w_ls_R_T_r_np,
-                n_gpus=1 # Assuming single GPU for now
+                n_gpus=n_jobs
             )
             # Results are in table_engine_r, processing below will handle them.
 

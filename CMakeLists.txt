@@ -6,6 +6,30 @@ project(dsigma LANGUAGES CXX CUDA)
 find_package(CUDAToolkit REQUIRED)
 find_package(Python REQUIRED COMPONENTS Interpreter Development)
 
+# --- Add OpenMP support ---
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    message(STATUS "Found OpenMP: ${OpenMP_CXX_VERSION}")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
+    
+    # Fix for OpenMP library path issues
+    string(REPLACE ";" " " OpenMP_CXX_LIBRARIES_FIXED "${OpenMP_CXX_LIBRARIES}")
+    set(OpenMP_CXX_LIBRARIES "${OpenMP_CXX_LIBRARIES_FIXED}")
+
+    if(WIN32)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /openmp:llvm")
+        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=/openmp:llvm")
+    else()
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+        # For NVCC compiler, need to pass OpenMP flags differently
+        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=${OpenMP_CXX_FLAGS}")
+        set(CMAKE_CUDA_HOST_LINK_LAUNCHER "${CMAKE_CXX_COMPILER}")
+        set(CMAKE_CUDA_STANDARD_LIBRARIES "${CMAKE_CUDA_STANDARD_LIBRARIES} ${OpenMP_CXX_LIBRARIES}")
+    endif()
+else()
+    message(WARNING "OpenMP not found. Multi-GPU processing will be disabled (sequential execution).")
+endif()
+
 # Find NumPy - modern approach that works with current NumPy versions
 execute_process(
     COMMAND ${Python_EXECUTABLE} -c "import numpy; print(numpy.get_include())"
@@ -158,6 +182,10 @@ target_link_libraries(_precompute_cuda PRIVATE
     CUDA::cudart
     ${Python_LIBRARIES}
 )
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(_precompute_cuda PRIVATE OpenMP::OpenMP_CXX)
+    target_compile_definitions(_precompute_cuda PRIVATE OPENMP_FOUND)
+endif()
 if(HEALPIX_FOUND)
     target_link_libraries(_precompute_cuda PRIVATE ${HEALPIX_LIBRARY})
 endif()

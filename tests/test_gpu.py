@@ -15,10 +15,10 @@ def test_precompute(test_catalogs, assert_close=True):
     theta_bins = np.logspace(0, 1, n_bins + 1) * u.deg
     startt = time()
     precomputed_table_gpu = precompute(table_l.copy(), table_s, theta_bins,
-                                                  use_gpu=True)
+                                                  use_gpu=True, n_jobs=4)
     time1 = time()
     precomputed_table_cpu = precompute(table_l.copy(), table_s, theta_bins,
-                                                  use_gpu=False)
+                                                  use_gpu=False, n_jobs=20)
     time2 = time()
 
     print(f"GPU precomputation time: {time1 - startt:.4f} seconds")
@@ -57,8 +57,8 @@ if __name__ == "__main__":
 
     tab_l_gpu, tab_l_cpu = test_precompute((table_l, table_s),assert_close=False)
 
-    print(tab_l_gpu)
-    print(tab_l_cpu)
+    # print(tab_l_gpu)
+    # print(tab_l_cpu)
 
     for col in tab_l_gpu.colnames:
         print(col, np.allclose(tab_l_gpu[col], tab_l_cpu[col]))

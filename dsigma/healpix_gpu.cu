@@ -18,6 +18,7 @@
 // Constants for HEALPix - EXACT values from specification
 #define TWOTHIRD (2.0 / 3.0)
 
+
 __device__ double dot_gpu(const float3& a, const float3& b) {
     return static_cast<double>(a.x) * b.x + static_cast<double>(a.y) * b.y + static_cast<double>(a.z) * b.z;
 }
