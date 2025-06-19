@@ -7,7 +7,7 @@ from dsigma.precompute import precompute
 from fixtures import test_catalogs
 
 
-def test_precompute(test_catalogs,assert_close=True):
+def test_precompute(test_catalogs, assert_close=True):
     table_l, table_s = test_catalogs
 
     # Precompute the fields
