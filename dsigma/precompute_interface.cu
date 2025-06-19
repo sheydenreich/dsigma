@@ -219,8 +219,8 @@ __device__ void kdtree_radius_search_and_process(
     WorkspaceCandidateList candidates(my_workspace, max_k_per_thread, sqrtf(search_radius_sq));
     cukd::stackBased::knn(candidates, query_point, *d_world_bounds, d_kdtree_points, num_kdtree_points);
     
-    int processed_count = 0;
-    for (int i = 0; i < max_k_per_thread; i++) {
+    int processed_count = candidates.get_final_count();
+    for (int i = 0; i < processed_count; i++) {
         int kdtree_index = candidates.get_pointID(i);
         if (kdtree_index < 0) {
             // printf("GPU %d, Lens %d (zl=%.4f) exhausted its candidate buffer of %d!\n",
@@ -229,7 +229,6 @@ __device__ void kdtree_radius_search_and_process(
         }
         int original_index = d_kdtree_to_original_mapping[kdtree_index];
         process_found_source_hp_pixel(original_index, callback_data);
-        processed_count++;
     }
 
     if (processed_count >= max_k_per_thread) {

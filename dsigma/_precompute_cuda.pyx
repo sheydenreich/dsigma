@@ -76,7 +76,7 @@ def precompute_gpu_wrapper(
     np.ndarray[np.double_t, ndim=1, mode="c"] sum_w_ls_A_p_R_2_r_np,
     np.ndarray[np.double_t, ndim=1, mode="c"] sum_w_ls_R_T_r_np,
 
-    int n_gpus = 1
+    int n_gpus,
     ):
 
     cdef _precompute_cuda.TableData c_table_data
