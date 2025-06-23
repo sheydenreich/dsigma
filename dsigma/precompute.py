@@ -189,7 +189,7 @@ def precompute(
         table_l, table_s, bins, table_c=None, table_n=None,
         cosmology=FlatLambdaCDM(H0=100, Om0=0.3), comoving=True,
         weighting=-2, lens_source_cut=0, nside=256, n_jobs=1,
-        progress_bar=False, use_gpu=False):
+        progress_bar=False, use_gpu=False, force_shared=False, force_global=False):
     """For all lenses in the catalog, precompute the lensing statistics.
 
     Parameters
@@ -233,7 +233,8 @@ def precompute(
         them simultaneously. This parameter determines the number of pixels.
         It has to be a power of 2. May impact performance. Default is 256.
     n_jobs : int, optional
-        Number of jobs to run at the same time. Default is 1.
+        Number of jobs to run at the same time. Default is 1. In case use_gpu=True,
+        n_jobs will determine the number of GPUs to use.
     progress_bar : boolean, option
         Whether to show a progress bar for the main loop over lens pixels.
         Default is False.
@@ -241,6 +242,13 @@ def precompute(
         If True, attempt to use the GPU-accelerated precomputation engine.
         If False or GPU is not available, falls back to the CPU engine.
         Default is False.
+    force_shared : bool, optional
+        If True, force the GPU computation to use shared memory. If the
+        required max_k doesn't fit in shared memory, nside will be reduced
+        until it does. Only effective when use_gpu=True. Default is False.
+    force_global : bool, optional
+        If True, force the GPU computation to use global memory instead of
+        shared memory. Only effective when use_gpu=True. Default is False.
 
     Returns
     -------
@@ -266,6 +274,51 @@ def precompute(
     if not isinstance(n_jobs, int) or n_jobs < 1:
         raise ValueError('Number of jobs must be positive integer. Received ' +
                          '{}.'.format(n_jobs))
+
+    # Validate memory mode flags
+    if force_shared and force_global:
+        raise ValueError('force_shared and force_global cannot both be True.')
+
+    # GPU memory management: check max_k requirements and adjust nside if needed
+    if use_gpu and force_shared:
+        # Import the check_max_k function for early nside adjustment
+        if GPU_AVAILABLE:
+            from ._precompute_cuda import check_max_k
+            
+            # Estimate maximum distance bins to calculate max_k
+            # We need to do this before HEALPix pixelization 
+            z_l = np.array(table_l['z'])
+            d_com_l = np.array([cosmology.comoving_transverse_distance(z).to(u.Mpc).value for z in z_l])
+            
+            # Convert bins to theta_bins (estimate)
+            if not isinstance(bins, u.quantity.Quantity):
+                bins_quantity = bins * u.Mpc
+            else:
+                bins_quantity = bins
+                
+            try:
+                theta_bins_max = np.amax(bins_quantity.to(u.rad).value)
+            except UnitConversionError:
+                theta_bins_max = np.amax(bins_quantity.to(u.Mpc).value / np.amin(d_com_l))
+                if not comoving:
+                    theta_bins_max *= (1 + np.amax(z_l))
+            
+            # Estimate maximum dist_3d_sq for max_k calculation
+            max_dist_3d_sq_estimate = min(4 * np.sin(theta_bins_max / 2.0)**2, 2.0)
+            max_distances_estimate = np.full(len(table_l), max_dist_3d_sq_estimate)
+            
+            # Check max_k requirements and adjust nside if necessary
+            max_k_result = check_max_k(nside, len(bins) - 1, max_distances_estimate, True)
+            original_nside = nside
+            nside = max_k_result['adjusted_nside']
+            
+            if nside != original_nside:
+                print(f"force_shared=True: Reduced nside from {original_nside} to {nside} "
+                      f"to fit max_k={max_k_result['max_k']} in shared memory")
+        else:
+            warnings.warn(
+                "force_shared=True requested but GPU not available. Ignoring flag.",
+                RuntimeWarning)
 
     if table_n is not None:
         if 'z_bin' not in table_s.colnames:
@@ -541,7 +594,9 @@ def precompute(
                 sum_w_ls_z_s_r_np,
                 sum_w_ls_m_r_np, sum_w_ls_1_minus_e_rms_sq_r_np,
                 sum_w_ls_A_p_R_2_r_np, sum_w_ls_R_T_r_np,
-                n_gpus=n_jobs
+                n_gpus=n_jobs,
+                force_shared=force_shared,
+                force_global=force_global
             )
             # Results are in table_engine_r, processing below will handle them.
 

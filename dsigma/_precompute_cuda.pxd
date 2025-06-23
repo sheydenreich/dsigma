@@ -71,8 +71,15 @@ cdef extern from "precompute_interface.h": # Assumes precompute_interface.h is i
         double* sum_w_ls_A_p_R_2_r
         double* sum_w_ls_R_T_r
 
+    # Structure for max_k check results
+    ctypedef struct MaxKCheckResult:
+        long adjusted_nside
+        int max_k
+        bint fits_in_shared_memory
+    
     # Changed to pass TableData by pointer as per C++ interface
-    int precompute_cuda_interface(TableData* table_data_ptr, int n_gpus)
+    int precompute_cuda_interface(TableData* table_data_ptr, int n_gpus, bint force_shared_memory, bint force_global_memory)
+    MaxKCheckResult check_max_k_for_precompute(long nside, int n_bins, double* max_distances, int n_lenses, bint force_shared)
 
 
 # For numpy arrays

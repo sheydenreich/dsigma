@@ -145,8 +145,72 @@ int calculate_max_k_host(long nside, double search_radius_sq) {
     double pixel_area = (4.0 * M_PI) / (12.0 * (double)nside * nside);
     double search_area_approx = M_PI * search_radius_sq;
     double theoretical_max = search_area_approx / pixel_area;
-    int max_k = static_cast<int>(theoretical_max * 1.1) + 32;
+    int max_k = static_cast<int>(theoretical_max * (1.2)) + 10;
     return (max_k < 32) ? 32 : max_k;
+}
+
+// Function to check if max_k fits in shared memory and optionally reduce nside
+MaxKCheckResult check_max_k_requirements(
+    long initial_nside, 
+    int n_bins,
+    double max_search_radius_sq,
+    bool force_shared_memory
+) {
+    const size_t SHARED_MEM_LIMIT = 47 * 1024; // 47KB to be safe
+    MaxKCheckResult result;
+    
+    long current_nside = initial_nside;
+    
+    while (current_nside >= 2) {
+        // Calculate max_k for current nside
+        int max_k = calculate_max_k_host(current_nside, max_search_radius_sq);
+        
+        // Calculate required shared memory
+        size_t required_shared_mem = (n_bins + 1) * sizeof(double) +  // Distance bins
+                                   max_k * sizeof(KnnCandidate) +     // KD-tree workspace
+                                   max_k * sizeof(int);               // Candidate indices
+        
+        bool fits = required_shared_mem <= SHARED_MEM_LIMIT;
+        
+        result.adjusted_nside = current_nside;
+        result.max_k = max_k;
+        result.fits_in_shared_memory = fits;
+        
+        // If it fits, or we're not forcing shared memory, return
+        if (fits || !force_shared_memory) {
+            break;
+        }
+        
+        // If forcing shared memory and it doesn't fit, reduce nside
+        current_nside /= 2;
+    }
+    
+    return result;
+}
+
+// C interface function for Python wrapper - note: not extern "C" because it returns a struct
+MaxKCheckResult check_max_k_for_precompute(
+    long nside,
+    int n_bins, 
+    double* max_distances,
+    int n_lenses,
+    bool force_shared
+) {
+    // Find the maximum search radius from all lenses
+    double max_search_radius_sq = 0.0;
+    double lens_hp_pixrad = get_max_pixrad_gpu_host(nside);
+    double pixrad_3d_sq = 4.0 * sin(lens_hp_pixrad * 0.5) * sin(lens_hp_pixrad * 0.5);
+    
+    for (int i = 0; i < n_lenses; ++i) {
+        double max_dist_3d_sq_lens = max_distances[i];
+        double search_radius_sq = max_dist_3d_sq_lens + (4.0 * pixrad_3d_sq) + 
+                                 4.0 * sqrt(pixrad_3d_sq * max_dist_3d_sq_lens);
+        if (search_radius_sq > max_search_radius_sq) {
+            max_search_radius_sq = search_radius_sq;
+        }
+    }
+    
+    return check_max_k_requirements(nside, n_bins, max_search_radius_sq, force_shared);
 }
 
 
@@ -176,29 +240,33 @@ typedef struct {
     double* g_sum_w_ls_R_T_r_batch;
 } KernelCallbackData;
 
-// =========================================================================================
-// OPTIMIZATION TARGET: This function is the primary cause of high register pressure.
-// All local variables have been removed. Data is accessed directly via the cb_data pointer.
-// This gives the compiler maximum flexibility to manage registers.
-// =========================================================================================
+// Shared memory structure for lens data
+struct SharedLensData {
+    double z_l;
+    double d_com_l;
+    double sin_ra_l, cos_ra_l;
+    double sin_dec_l, cos_dec_l;
+    float3 xyz_cartesian;
+    float search_radius_sq;
+    double max_dist_3d_sq;
+    int lens_idx_global;
+    int lens_idx_batch;
+    // Distance bins for this lens - will be allocated dynamically
+};
+
+// Original functions for compatibility
 __device__ void process_found_source_hp_pixel(int source_kdtree_idx, KernelCallbackData* cb_data) {
     int start_offset = cb_data->g_unique_hp_id_offsets_start[source_kdtree_idx];
     int end_offset = cb_data->g_unique_hp_id_offsets_end[source_kdtree_idx];
     
-    // Loop over every actual source object within this HEALPix cell
     for (int i_s_mapped_idx = start_offset; i_s_mapped_idx < end_offset; ++i_s_mapped_idx) {
-        
         int original_source_idx = cb_data->g_sorted_source_original_indices[i_s_mapped_idx];
-        
-        // Load source redshift for early exit check
         double zs_i = cb_data->g_z_s[original_source_idx];
         
-        // Redshift filter: source must be behind the lens
         if (cb_data->g_z_l_batch[cb_data->lens_idx_batch] >= zs_i || cb_data->g_z_l_batch[cb_data->lens_idx_batch] >= cb_data->g_z_l_max_s[original_source_idx]) {
             continue;
         }
         
-        // Calculate squared angular distance
         double dist_sq = dist_angular_sq_gpu(
             cb_data->g_sin_ra_l_batch[cb_data->lens_idx_batch], cb_data->g_cos_ra_l_batch[cb_data->lens_idx_batch], 
             cb_data->g_sin_dec_l_batch[cb_data->lens_idx_batch], cb_data->g_cos_dec_l_batch[cb_data->lens_idx_batch],
@@ -206,13 +274,9 @@ __device__ void process_found_source_hp_pixel(int source_kdtree_idx, KernelCallb
             cb_data->g_sin_dec_s[original_source_idx], cb_data->g_cos_dec_s[original_source_idx]
         );
         
-        // Find which radial bin this pair falls into
         int i_bin = find_bin_idx_gpu(dist_sq, cb_data->g_dist_3d_sq_bins_batch + (size_t)cb_data->lens_idx_batch * (cb_data->N_bins + 1), cb_data->N_bins);
-        if (i_bin == -1) {
-            continue; // Not in any bin for this lens
-        }
+        if (i_bin == -1) continue;
         
-        // Calculate the inverse critical surface density
         double sigma_crit_inv = calculate_sigma_crit_inv_gpu(
             cb_data->g_z_l_batch[cb_data->lens_idx_batch], zs_i, 
             cb_data->g_d_com_l_batch[cb_data->lens_idx_batch], cb_data->g_d_com_s[original_source_idx],
@@ -220,17 +284,11 @@ __device__ void process_found_source_hp_pixel(int source_kdtree_idx, KernelCallb
             cb_data->lens_idx_global, cb_data->n_z_bins_l,
             (cb_data->has_sigma_crit_eff && cb_data->g_z_bin_s != nullptr) ? cb_data->g_z_bin_s[original_source_idx] : -1
         );
-        if (sigma_crit_inv == 0.0 || sigma_crit_inv == DBL_MAX) {
-            continue;
-        }
+        if (sigma_crit_inv == 0.0 || sigma_crit_inv == DBL_MAX) continue;
         
-        // Calculate the lensing weight for this pair
         double w_ls = calculate_w_ls_gpu(sigma_crit_inv, cb_data->g_w_s[original_source_idx], cb_data->weighting);
-        if (w_ls == 0.0) {
-            continue;
-        }
+        if (w_ls == 0.0) continue;
         
-        // Calculate tangential shear and its components
         double cos_2phi, sin_2phi;
         calculate_et_components_gpu(
             cb_data->g_sin_ra_l_batch[cb_data->lens_idx_batch], cb_data->g_cos_ra_l_batch[cb_data->lens_idx_batch], 
@@ -240,11 +298,7 @@ __device__ void process_found_source_hp_pixel(int source_kdtree_idx, KernelCallb
         );
         double e_t_val = calculate_et_gpu(cb_data->g_e_1_s[original_source_idx], cb_data->g_e_2_s[original_source_idx], cos_2phi, sin_2phi);
         
-        // --- Accumulate results ---
-        // Since each thread works on a unique lens_idx_batch, its output slots are unique.
-        // Therefore, atomics are not necessary here, which reduces instruction overhead.
         size_t out_idx = (size_t)cb_data->lens_idx_batch * cb_data->N_bins + i_bin;
-        
         cb_data->g_sum_1_r_batch[out_idx] += 1;
         cb_data->g_sum_w_ls_r_batch[out_idx] += w_ls;
         cb_data->g_sum_w_ls_e_t_r_batch[out_idx] += w_ls * e_t_val;
@@ -287,13 +341,9 @@ __device__ void kdtree_radius_search_and_process(
     }
 }
 
-// OPTIMIZATION: Added launch bounds to give the compiler a hint for register allocation.
-// This tells the compiler to optimize for blocks of 256 threads, and that it should
-// target an occupancy of at least 2 blocks per SM.
 __global__ 
 __launch_bounds__(256, 2)
 void process_lens_batch_kernel(
-    // A lot of parameters - this itself contributes to register pressure
     const double* g_z_l_batch, const double* g_d_com_l_batch, const double* g_sin_ra_l_batch, const double* g_cos_ra_l_batch, const double* g_sin_dec_l_batch, const double* g_cos_dec_l_batch, const double* g_dist_3d_sq_bins_batch,
     const double* g_z_s, const double* g_d_com_s, const double* g_sin_ra_s, const double* g_cos_ra_s, const double* g_sin_dec_s, const double* g_cos_dec_s,
     const double* g_w_s, const double* g_e_1_s, const double* g_e_2_s, const double* g_z_l_max_s,
@@ -312,10 +362,6 @@ void process_lens_batch_kernel(
     int lens_idx_batch = blockIdx.x * blockDim.x + threadIdx.x;
     if (lens_idx_batch >= N_lenses_in_batch) return;
 
-    // OPTIMIZATION: Removed caching of lens properties into local variables.
-    // We will pass the main pointers into the callback struct and access them there.
-    // This reduces the number of variables the compiler must keep "live" for the
-    // entire function body, reducing register pressure.
     float3 lens_xyz_cartesian;
     spherical_to_cartesian_gpu(g_sin_ra_l_batch[lens_idx_batch], g_cos_ra_l_batch[lens_idx_batch], 
                                g_sin_dec_l_batch[lens_idx_batch], g_cos_dec_l_batch[lens_idx_batch], 
@@ -329,6 +375,312 @@ void process_lens_batch_kernel(
     KernelCallbackData callback_data;
     callback_data.lens_idx_global = global_lens_offset + lens_idx_batch;
     callback_data.lens_idx_batch = lens_idx_batch;
+    callback_data.N_bins = N_bins;
+    callback_data.nside_healpix = nside_healpix;
+    callback_data.g_unique_source_hp_ids = g_unique_source_hp_ids;
+    callback_data.g_all_source_hp_ids_sorted = g_all_source_hp_ids_sorted;
+    callback_data.g_sorted_source_original_indices = g_sorted_source_original_indices;
+    callback_data.g_unique_hp_id_offsets_start = g_unique_hp_id_offsets_start;
+    callback_data.g_unique_hp_id_offsets_end = g_unique_hp_id_offsets_end;
+    callback_data.g_z_l_batch = g_z_l_batch; callback_data.g_d_com_l_batch = g_d_com_l_batch;
+    callback_data.g_sin_ra_l_batch = g_sin_ra_l_batch; callback_data.g_cos_ra_l_batch = g_cos_ra_l_batch;
+    callback_data.g_sin_dec_l_batch = g_sin_dec_l_batch; callback_data.g_cos_dec_l_batch = g_cos_dec_l_batch;
+    callback_data.g_dist_3d_sq_bins_batch = g_dist_3d_sq_bins_batch;
+    callback_data.g_z_s = g_z_s; callback_data.g_d_com_s = g_d_com_s; callback_data.g_sin_ra_s = g_sin_ra_s; callback_data.g_cos_ra_s = g_cos_ra_s;
+    callback_data.g_sin_dec_s = g_sin_dec_s; callback_data.g_cos_dec_s = g_cos_dec_s; callback_data.g_w_s = g_w_s; callback_data.g_e_1_s = g_e_1_s;
+    callback_data.g_e_2_s = g_e_2_s; callback_data.g_z_l_max_s = g_z_l_max_s; callback_data.has_sigma_crit_eff = _has_sigma_crit_eff; callback_data.n_z_bins_l = _n_z_bins_l;
+    callback_data.g_sigma_crit_eff_l = g_sigma_crit_eff_l; callback_data.g_z_bin_s = _g_z_bin_s; callback_data.has_m_s = _has_m_s; callback_data.g_m_s = g_m_s;
+    callback_data.has_e_rms_s = _has_e_rms_s; callback_data.g_e_rms_s = g_e_rms_s; callback_data.has_R_2_s = _has_R_2_s; callback_data.g_R_2_s = g_R_2_s;
+    callback_data.has_R_matrix_s = _has_R_matrix_s; callback_data.g_R_11_s = g_R_11_s; callback_data.g_R_12_s = g_R_12_s;
+    callback_data.g_R_21_s = g_R_21_s; callback_data.g_R_22_s = g_R_22_s;
+    callback_data.comoving = comoving; callback_data.weighting = weighting; 
+    callback_data.g_sum_1_r_batch = g_sum_1_r_batch; callback_data.g_sum_w_ls_r_batch = g_sum_w_ls_r_batch;
+    callback_data.g_sum_w_ls_e_t_r_batch = g_sum_w_ls_e_t_r_batch; callback_data.g_sum_w_ls_e_t_sigma_crit_r_batch = g_sum_w_ls_e_t_sigma_crit_r_batch;
+    callback_data.g_sum_w_ls_z_s_r_batch = g_sum_w_ls_z_s_r_batch; callback_data.g_sum_w_ls_sigma_crit_r_batch = g_sum_w_ls_sigma_crit_r_batch; callback_data.g_sum_w_ls_m_r_batch = g_sum_w_ls_m_r_batch;
+    callback_data.g_sum_w_ls_1_minus_e_rms_sq_r_batch = g_sum_w_ls_1_minus_e_rms_sq_r_batch; callback_data.g_sum_w_ls_A_p_R_2_r_batch = g_sum_w_ls_A_p_R_2_r_batch;
+    callback_data.g_sum_w_ls_R_T_r_batch = g_sum_w_ls_R_T_r_batch;
+
+    kdtree_radius_search_and_process(
+        lens_xyz_cartesian, search_radius_sq,
+        g_unique_source_hp_coords_kdtree, N_unique_source_hp, g_world_bounds,
+        g_kdtree_to_original_mapping, &callback_data,
+        g_knn_workspace, max_k_per_thread,
+        gpu_id
+    );
+}
+
+// Modified process_found_source_hp_pixel to work with shared lens data and atomic accumulation
+__device__ void process_found_source_hp_pixel_shared(
+    int source_kdtree_idx, 
+    KernelCallbackData* cb_data, 
+    SharedLensData* shared_lens,
+    const double* shared_dist_bins  // Points to shared memory copy of distance bins
+) {
+    int start_offset = cb_data->g_unique_hp_id_offsets_start[source_kdtree_idx];
+    int end_offset = cb_data->g_unique_hp_id_offsets_end[source_kdtree_idx];
+    
+    // Debug: Print processing info for first few lenses
+    // if (shared_lens->lens_idx_global < 3) {
+    //     printf("DEBUG: Processing HP pixel %d for lens %d: sources [%d, %d)\n",
+    //            source_kdtree_idx, shared_lens->lens_idx_global, start_offset, end_offset);
+    // }
+    
+    int sources_processed = 0;
+    
+    // Loop over every actual source object within this HEALPix cell
+    for (int i_s_mapped_idx = start_offset; i_s_mapped_idx < end_offset; ++i_s_mapped_idx) {
+        
+        int original_source_idx = cb_data->g_sorted_source_original_indices[i_s_mapped_idx];
+        
+        // Load source redshift for early exit check
+        double zs_i = cb_data->g_z_s[original_source_idx];
+        
+        // Redshift filter: source must be behind the lens
+        if (shared_lens->z_l >= zs_i || shared_lens->z_l >= cb_data->g_z_l_max_s[original_source_idx]) {
+            continue;
+        }
+        
+        // Calculate squared angular distance using shared lens data
+        double dist_sq = dist_angular_sq_gpu(
+            shared_lens->sin_ra_l, shared_lens->cos_ra_l, 
+            shared_lens->sin_dec_l, shared_lens->cos_dec_l,
+            cb_data->g_sin_ra_s[original_source_idx], cb_data->g_cos_ra_s[original_source_idx], 
+            cb_data->g_sin_dec_s[original_source_idx], cb_data->g_cos_dec_s[original_source_idx]
+        );
+        
+        // Find which radial bin this pair falls into
+        int i_bin = find_bin_idx_gpu(dist_sq, shared_dist_bins, cb_data->N_bins);
+        if (i_bin == -1) {
+            continue; // Not in any bin for this lens
+        }
+        
+        // Calculate the inverse critical surface density
+        double sigma_crit_inv = calculate_sigma_crit_inv_gpu(
+            shared_lens->z_l, zs_i, 
+            shared_lens->d_com_l, cb_data->g_d_com_s[original_source_idx],
+            cb_data->comoving, cb_data->has_sigma_crit_eff, cb_data->g_sigma_crit_eff_l, 
+            shared_lens->lens_idx_global, cb_data->n_z_bins_l,
+            (cb_data->has_sigma_crit_eff && cb_data->g_z_bin_s != nullptr) ? cb_data->g_z_bin_s[original_source_idx] : -1
+        );
+        if (sigma_crit_inv == 0.0 || sigma_crit_inv == DBL_MAX) {
+            continue;
+        }
+        
+        // Calculate the lensing weight for this pair
+        double w_ls = calculate_w_ls_gpu(sigma_crit_inv, cb_data->g_w_s[original_source_idx], cb_data->weighting);
+        if (w_ls == 0.0) {
+            continue;
+        }
+        
+        // Calculate tangential shear and its components
+        double cos_2phi, sin_2phi;
+        calculate_et_components_gpu(
+            shared_lens->sin_ra_l, shared_lens->cos_ra_l, 
+            shared_lens->sin_dec_l, shared_lens->cos_dec_l,
+            cb_data->g_sin_ra_s[original_source_idx], cb_data->g_cos_ra_s[original_source_idx], 
+            cb_data->g_sin_dec_s[original_source_idx], cb_data->g_cos_dec_s[original_source_idx], cos_2phi, sin_2phi
+        );
+        double e_t_val = calculate_et_gpu(cb_data->g_e_1_s[original_source_idx], cb_data->g_e_2_s[original_source_idx], cos_2phi, sin_2phi);
+        
+        // --- Accumulate results using atomics (since multiple threads now work on same lens) ---
+        size_t out_idx = (size_t)shared_lens->lens_idx_batch * cb_data->N_bins + i_bin;
+        
+        // Debug: Print accumulation for first few lenses
+        // if (shared_lens->lens_idx_global < 3) {
+        //     printf("DEBUG: Accumulating for lens %d, source %d: bin=%d, w_ls=%.6f, e_t=%.6f\n",
+        //            shared_lens->lens_idx_global, original_source_idx, i_bin, w_ls, e_t_val);
+        // }
+        
+        atomicAdd((unsigned long long*)&cb_data->g_sum_1_r_batch[out_idx], 1ULL);
+        atomicAdd(&cb_data->g_sum_w_ls_r_batch[out_idx], w_ls);
+        atomicAdd(&cb_data->g_sum_w_ls_e_t_r_batch[out_idx], w_ls * e_t_val);
+        
+        double sigma_crit = 1.0 / sigma_crit_inv;
+        atomicAdd(&cb_data->g_sum_w_ls_e_t_sigma_crit_r_batch[out_idx], w_ls * e_t_val * sigma_crit);
+        atomicAdd(&cb_data->g_sum_w_ls_z_s_r_batch[out_idx], w_ls * zs_i);
+        atomicAdd(&cb_data->g_sum_w_ls_sigma_crit_r_batch[out_idx], w_ls * sigma_crit);
+        
+        if (cb_data->has_m_s) atomicAdd(&cb_data->g_sum_w_ls_m_r_batch[out_idx], w_ls * cb_data->g_m_s[original_source_idx]);
+        if (cb_data->has_e_rms_s) { 
+            double e_rms_s_i = cb_data->g_e_rms_s[original_source_idx]; 
+            atomicAdd(&cb_data->g_sum_w_ls_1_minus_e_rms_sq_r_batch[out_idx], w_ls * (1.0 - e_rms_s_i * e_rms_s_i)); 
+        }
+        if (cb_data->has_R_2_s && cb_data->g_R_2_s[original_source_idx] <= 0.31) {
+            atomicAdd(&cb_data->g_sum_w_ls_A_p_R_2_r_batch[out_idx], 0.00865 * w_ls / 0.01);
+        }
+        if (cb_data->has_R_matrix_s) { 
+            double R_T_val = calculate_R_T_gpu(cb_data->g_R_11_s[original_source_idx], cb_data->g_R_12_s[original_source_idx], 
+                cb_data->g_R_21_s[original_source_idx], cb_data->g_R_22_s[original_source_idx], cos_2phi, sin_2phi); 
+            atomicAdd(&cb_data->g_sum_w_ls_R_T_r_batch[out_idx], w_ls * R_T_val); 
+        }
+        
+        sources_processed++;
+    }
+    
+    // Debug: Print summary for first few lenses
+    // if (shared_lens->lens_idx_global < 3 && sources_processed > 0) {
+    //     printf("DEBUG: HP pixel %d for lens %d processed %d sources\n",
+    //            source_kdtree_idx, shared_lens->lens_idx_global, sources_processed);
+    // }
+}
+
+// Modified KD-tree search to distribute work among block threads
+__device__ void kdtree_radius_search_and_process_shared(
+    SharedLensData* shared_lens,
+    const double* shared_dist_bins,
+    const float3* d_kdtree_points, int num_kdtree_points,
+    const cukd::box_t<float3>* d_world_bounds, const int* d_kdtree_to_original_mapping,
+    KernelCallbackData* callback_data, void* g_knn_workspace, int max_k_per_thread,
+    int gpu_id
+) {
+    // Calculate memory layout in shared memory - we'll use the passed shared_dist_bins directly
+    extern __shared__ char shared_memory_base[];
+    char* workspace_start = shared_memory_base + (callback_data->N_bins + 1) * sizeof(double);
+    int* candidates_found = (int*)(workspace_start + max_k_per_thread * sizeof(KnnCandidate));
+    
+    // Thread 0 performs the KD-tree search to find candidate sources
+    __shared__ int num_candidates;
+    
+    if (threadIdx.x == 0) {
+        void* my_workspace = workspace_start;
+        WorkspaceCandidateList candidates(my_workspace, max_k_per_thread, sqrtf(shared_lens->search_radius_sq));
+        
+        // Debug: Print search parameters
+        // if (shared_lens->lens_idx_global < 3) {
+        //     printf("DEBUG: Starting KD-tree search for lens %d: search_radius=%.6f, num_points=%d\n",
+        //            shared_lens->lens_idx_global, sqrtf(shared_lens->search_radius_sq), num_kdtree_points);
+        // }
+        
+        cukd::stackBased::knn(candidates, shared_lens->xyz_cartesian, *d_world_bounds, d_kdtree_points, num_kdtree_points);
+        
+        int final_count = candidates.get_final_count();
+        num_candidates = min(final_count, max_k_per_thread);
+        
+        // Debug: Always print for first few lenses
+        // if (shared_lens->lens_idx_global < 3) {
+        //     printf("DEBUG: KD-tree search complete for lens %d: final_count=%d, limited_to=%d\n",
+        //            shared_lens->lens_idx_global, final_count, num_candidates);
+        // }
+        
+        for (int i = 0; i < num_candidates; i++) {
+            int kdtree_index = candidates.get_pointID(i);
+            if (kdtree_index >= 0) {
+                candidates_found[i] = d_kdtree_to_original_mapping[kdtree_index];
+                // Debug: Print first few candidates
+                // if (shared_lens->lens_idx_global < 3 && i < 5) {
+                    // printf("DEBUG: Candidate %d: kdtree_idx=%d, original_idx=%d, dist=%.6f\n",
+                        //    i, kdtree_index, candidates_found[i], sqrtf(candidates.get_dist2(i)));
+                // }
+            } else {
+                candidates_found[i] = -1;
+            }
+        }
+        
+        if (num_candidates >= max_k_per_thread) {
+            printf("FATAL ERROR: GPU %d, Lens %d (zl=%.4f) exhausted its candidate buffer of %d!\n",
+                   gpu_id, shared_lens->lens_idx_global, shared_lens->z_l, max_k_per_thread);
+        }
+    }
+    
+    __syncthreads();
+    
+    // All threads in the block now process the found candidates in parallel
+    __shared__ int total_processed;
+    if (threadIdx.x == 0) total_processed = 0;
+    __syncthreads();
+    
+    for (int i = threadIdx.x; i < num_candidates; i += blockDim.x) {
+        // if (candidates_found[i] >= 0) {
+        //     // Debug: Print processing attempts for first few lenses
+        //     if (shared_lens->lens_idx_global < 3) {
+        //         printf("DEBUG: Thread %d processing candidate %d (original_idx=%d) for lens %d\n",
+        //                threadIdx.x, i, candidates_found[i], shared_lens->lens_idx_global);
+        //     }
+            process_found_source_hp_pixel_shared(candidates_found[i], callback_data, shared_lens, shared_dist_bins);
+            // atomicAdd(&total_processed, 1);
+        // }
+    }
+    
+    __syncthreads();
+    // if (threadIdx.x == 0) {
+        // if (shared_lens->lens_idx_global < 3 || total_processed > 0) {
+            // printf("GPU %d: Block %d (lens %d) processed %d candidate pixels out of %d candidates\n", 
+                //    gpu_id, blockIdx.x, shared_lens->lens_idx_global, total_processed, num_candidates);
+        // }
+    // }
+}
+
+// OPTIMIZATION: Modified kernel to use 1 Thread Block = 1 Lens paradigm
+__global__ 
+__launch_bounds__(256, 2)
+void process_lens_batch_kernel_optimized(
+    // A lot of parameters - this itself contributes to register pressure
+    const double* g_z_l_batch, const double* g_d_com_l_batch, const double* g_sin_ra_l_batch, const double* g_cos_ra_l_batch, const double* g_sin_dec_l_batch, const double* g_cos_dec_l_batch, const double* g_dist_3d_sq_bins_batch,
+    const double* g_z_s, const double* g_d_com_s, const double* g_sin_ra_s, const double* g_cos_ra_s, const double* g_sin_dec_s, const double* g_cos_dec_s,
+    const double* g_w_s, const double* g_e_1_s, const double* g_e_2_s, const double* g_z_l_max_s,
+    const float3* g_unique_source_hp_coords_kdtree, const long* g_unique_source_hp_ids, int N_unique_source_hp, const cukd::box_t<float3>* g_world_bounds, const int* g_kdtree_to_original_mapping,
+    const long* g_all_source_hp_ids_sorted, const int* g_sorted_source_original_indices, const int* g_unique_hp_id_offsets_start, const int* g_unique_hp_id_offsets_end,
+    bool _has_sigma_crit_eff, int _n_z_bins_l, const double* g_sigma_crit_eff_l, const int* _g_z_bin_s,
+    bool _has_m_s, const double* g_m_s, bool _has_e_rms_s, const double* g_e_rms_s, bool _has_R_2_s, const double* g_R_2_s,
+    bool _has_R_matrix_s, const double* g_R_11_s, const double* g_R_12_s, const double* g_R_21_s, const double* g_R_22_s,
+    int N_lenses_in_batch, int N_bins, long nside_healpix, bool comoving, int weighting, int global_lens_offset,
+    void* g_knn_workspace, int max_k_per_thread,
+    int gpu_id,
+    long long* g_sum_1_r_batch, double* g_sum_w_ls_r_batch, double* g_sum_w_ls_e_t_r_batch, double* g_sum_w_ls_e_t_sigma_crit_r_batch,
+    double* g_sum_w_ls_z_s_r_batch, double* g_sum_w_ls_sigma_crit_r_batch, double* g_sum_w_ls_m_r_batch,
+    double* g_sum_w_ls_1_minus_e_rms_sq_r_batch, double* g_sum_w_ls_A_p_R_2_r_batch, double* g_sum_w_ls_R_T_r_batch
+) {
+    // Now blockIdx.x directly corresponds to lens index
+    int lens_idx_batch = blockIdx.x;
+    if (lens_idx_batch >= N_lenses_in_batch) return;
+
+    // Shared memory for lens data - all threads in block can access with low latency
+    __shared__ SharedLensData shared_lens;
+    extern __shared__ char shared_memory[];
+    double* shared_dist_bins = (double*)shared_memory;
+    
+    // Thread 0 loads lens data into shared memory
+    if (threadIdx.x == 0) {
+        shared_lens.z_l = g_z_l_batch[lens_idx_batch];
+        shared_lens.d_com_l = g_d_com_l_batch[lens_idx_batch];
+        shared_lens.sin_ra_l = g_sin_ra_l_batch[lens_idx_batch];
+        shared_lens.cos_ra_l = g_cos_ra_l_batch[lens_idx_batch];
+        shared_lens.sin_dec_l = g_sin_dec_l_batch[lens_idx_batch];
+        shared_lens.cos_dec_l = g_cos_dec_l_batch[lens_idx_batch];
+        shared_lens.lens_idx_global = global_lens_offset + lens_idx_batch;
+        shared_lens.lens_idx_batch = lens_idx_batch;
+        
+        // Convert to cartesian coordinates
+        spherical_to_cartesian_gpu(shared_lens.sin_ra_l, shared_lens.cos_ra_l, 
+                                   shared_lens.sin_dec_l, shared_lens.cos_dec_l, 
+                                   shared_lens.xyz_cartesian);
+        
+        // Calculate search parameters
+        shared_lens.max_dist_3d_sq = g_dist_3d_sq_bins_batch[lens_idx_batch * (N_bins + 1) + N_bins];
+        double lens_hp_pixrad = get_max_pixrad_gpu(nside_healpix);
+        double pixrad_3d_sq = 4.0 * sin(lens_hp_pixrad * 0.5) * sin(lens_hp_pixrad * 0.5);
+        shared_lens.search_radius_sq = (float)(shared_lens.max_dist_3d_sq + (4.0 * pixrad_3d_sq + 4.0 * sqrt(shared_lens.max_dist_3d_sq) * sqrt(pixrad_3d_sq)));
+        
+        // Copy distance bins to shared memory
+        for (int i = 0; i <= N_bins; i++) {
+            shared_dist_bins[i] = g_dist_3d_sq_bins_batch[lens_idx_batch * (N_bins + 1) + i];
+        }
+        
+        // Debug output for first few lenses
+        // if (lens_idx_batch < 3) {
+        //     printf("DEBUG: Lens %d loaded: z_l=%.4f, xyz=(%.6f,%.6f,%.6f), search_radius_sq=%.6f\n",
+        //            lens_idx_batch, shared_lens.z_l, shared_lens.xyz_cartesian.x, 
+        //            shared_lens.xyz_cartesian.y, shared_lens.xyz_cartesian.z, shared_lens.search_radius_sq);
+        // }
+    }
+    
+    // Wait for thread 0 to finish loading shared data
+    __syncthreads();
+
+    // Set up callback data structure (same as before, but now using shared lens data)
+    KernelCallbackData callback_data;
+    callback_data.lens_idx_global = shared_lens.lens_idx_global;
+    callback_data.lens_idx_batch = shared_lens.lens_idx_batch;
     callback_data.N_bins = N_bins;
     callback_data.nside_healpix = nside_healpix;
     callback_data.g_unique_source_hp_ids = g_unique_source_hp_ids;
@@ -357,8 +709,9 @@ void process_lens_batch_kernel(
     callback_data.g_sum_w_ls_1_minus_e_rms_sq_r_batch = g_sum_w_ls_1_minus_e_rms_sq_r_batch; callback_data.g_sum_w_ls_A_p_R_2_r_batch = g_sum_w_ls_A_p_R_2_r_batch;
     callback_data.g_sum_w_ls_R_T_r_batch = g_sum_w_ls_R_T_r_batch;
 
-    kdtree_radius_search_and_process(
-        lens_xyz_cartesian, search_radius_sq,
+    // Now all threads in the block work together to process this lens
+    kdtree_radius_search_and_process_shared(
+        &shared_lens, shared_dist_bins,
         g_unique_source_hp_coords_kdtree, N_unique_source_hp, g_world_bounds,
         g_kdtree_to_original_mapping, &callback_data,
         g_knn_workspace, max_k_per_thread,
@@ -366,7 +719,7 @@ void process_lens_batch_kernel(
     );
 }
 
-int precompute_cuda_interface(TableData* tables, int n_gpus_to_use) {
+int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_shared_memory, bool force_global_memory) {
     // --- 1. Input Validation (unchanged) ---
     if (!tables->z_l || !tables->d_com_l || !tables->sin_ra_l || !tables->cos_ra_l || !tables->sin_dec_l || !tables->cos_dec_l || !tables->z_s || !tables->d_com_s || !tables->sin_ra_s || !tables->cos_ra_s || !tables->sin_dec_s || !tables->cos_dec_s || !tables->w_s || !tables->e_1_s || !tables->e_2_s || !tables->z_l_max_s || !tables->healpix_id_s || !tables->dist_3d_sq_bins || !tables->sum_1_r || !tables->sum_w_ls_r || !tables->sum_w_ls_e_t_r || !tables->sum_w_ls_e_t_sigma_crit_r || !tables->sum_w_ls_z_s_r || !tables->sum_w_ls_sigma_crit_r) { std::cerr << "Error: Essential data pointers in TableData are null." << std::endl; return -1; }
     if (tables->has_sigma_crit_eff && (!tables->sigma_crit_eff_l || !tables->z_bin_s)) { std::cerr << "Error: sigma_crit_eff pointers are null." << std::endl; return -1; }
@@ -483,10 +836,12 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use) {
             double pixrad_3d_sq = 4.0 * sin(lens_hp_pixrad * 0.5) * sin(lens_hp_pixrad * 0.5);
             for (int i = start_lens_idx; i < end_lens_idx; ++i) {
                 double max_dist_3d_sq_lens = tables->dist_3d_sq_bins[i * (tables->n_bins + 1) + tables->n_bins];
-                double search_radius_sq_gpu = max_dist_3d_sq_lens + (4.0 * pixrad_3d_sq);
+                double search_radius_sq_gpu = max_dist_3d_sq_lens + (4.0 * pixrad_3d_sq) + 4.0*sqrt(pixrad_3d_sq * max_dist_3d_sq_lens);
                 int required_k = calculate_max_k_host(tables->nside_healpix, search_radius_sq_gpu);
                 if (required_k > max_k_for_this_gpu) max_k_for_this_gpu = required_k;
             }
+            
+
 
             size_t free_mem, total_mem; CUDA_CHECK(cudaMemGetInfo(&free_mem, &total_mem));
             size_t memory_per_lens = sizeof(double) * 6 + (tables->n_bins + 1) * sizeof(double) + tables->n_bins * (sizeof(long long) + 8 * sizeof(double));
@@ -522,25 +877,91 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use) {
                 CUDA_CHECK(cudaMemcpyAsync(d_dist_3d_sq_bins_batch, tables->dist_3d_sq_bins + (size_t)global_lens_offset * (tables->n_bins + 1), (size_t)current_batch_size * (tables->n_bins + 1) * sizeof(double), cudaMemcpyHostToDevice, stream));
                 
                 int threadsPerBlock = 256;
-                int blocksPerGrid = (current_batch_size + threadsPerBlock - 1) / threadsPerBlock;
+                int blocksPerGrid = current_batch_size; // One block per lens now
                 
-                process_lens_batch_kernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(
-                    d_z_l_batch, d_d_com_l_batch, d_sin_ra_l_batch, d_cos_ra_l_batch, d_sin_dec_l_batch, d_cos_dec_l_batch, d_dist_3d_sq_bins_batch,
-                    d_z_s, d_d_com_s, d_sin_ra_s, d_cos_ra_s, d_sin_dec_s, d_cos_dec_s,
-                    d_w_s, d_e_1_s, d_e_2_s, d_z_l_max_s,
-                    d_unique_source_hp_coords_kdtree, d_unique_source_hp_ids, N_unique_source_hp, d_world_bounds, d_kdtree_to_original_mapping,
-                    d_all_source_hp_ids_sorted_gpu, d_sorted_source_original_indices_gpu,
-                    d_unique_hp_id_offsets_start_gpu, d_unique_hp_id_offsets_end_gpu,
-                    tables->has_sigma_crit_eff, tables->n_z_bins_l, d_sigma_crit_eff_l, d_z_bin_s,
-                    tables->has_m_s, d_m_s, tables->has_e_rms_s, d_e_rms_s, tables->has_R_2_s, d_R_2_s,
-                    tables->has_R_matrix_s, d_R_11_s, d_R_12_s, d_R_21_s, d_R_22_s,
-                    current_batch_size, tables->n_bins, tables->nside_healpix, tables->comoving, tables->weighting, global_lens_offset,
-                    d_knn_workspace_batch, max_k_for_this_gpu, gpu_id,
-                    d_sum_1_r_batch, d_sum_w_ls_r_batch, d_sum_w_ls_e_t_r_batch, d_sum_w_ls_e_t_sigma_crit_r_batch,
-                    d_sum_w_ls_z_s_r_batch, d_sum_w_ls_sigma_crit_r_batch, d_sum_w_ls_m_r_batch,
-                    d_sum_w_ls_1_minus_e_rms_sq_r_batch, d_sum_w_ls_A_p_R_2_r_batch, d_sum_w_ls_R_T_r_batch
-                );
+                // Calculate shared memory requirements
+                // Note: max_k_for_this_gpu is the total workspace for the entire block, not per thread
+                size_t shared_mem_size = (tables->n_bins + 1) * sizeof(double) +  // Distance bins
+                                       max_k_for_this_gpu * sizeof(KnnCandidate) + // KD-tree workspace (shared by all threads)
+                                       max_k_for_this_gpu * sizeof(int); // Candidate indices
                 
+                printf("GPU %d: Shared memory size: %zu bytes (%.2f KB). Max per block: 48KB\n", 
+                       gpu_id, shared_mem_size, shared_mem_size / 1024.0);
+                
+                // Calculate required shared memory for optimized kernel
+                const size_t SHARED_MEM_LIMIT = 47 * 1024; // Use 47KB to be safe
+                size_t required_shared_mem = (tables->n_bins + 1) * sizeof(double) +  // Distance bins
+                                           max_k_for_this_gpu * sizeof(KnnCandidate) + // KD-tree workspace
+                                           max_k_for_this_gpu * sizeof(int); // Candidate indices
+                
+                printf("GPU %d: Required shared memory: %zu bytes (%.2f KB) for max_k=%d\n", 
+                       gpu_id, required_shared_mem, required_shared_mem / 1024.0, max_k_for_this_gpu);
+                
+                // Determine which kernel to use based on memory mode flags
+                bool use_shared_memory = false;
+                bool use_global_memory = false;
+                
+                if (force_global_memory) {
+                    use_global_memory = true;
+                    printf("GPU %d: Forced to use global memory kernel\n", gpu_id);
+                } else if (force_shared_memory) {
+                    // force_shared_memory is true, so we should already have adjusted nside 
+                    // to ensure max_k fits in shared memory
+                    use_shared_memory = true;
+                    printf("GPU %d: Forced to use shared memory kernel: %zu bytes (%.2f KB)\n", 
+                           gpu_id, required_shared_mem, required_shared_mem / 1024.0);
+                } else {
+                    // Auto-determine based on whether it fits in shared memory
+                    if (required_shared_mem <= SHARED_MEM_LIMIT) {
+                        use_shared_memory = true;
+                        printf("GPU %d: Auto-selected shared memory kernel: %zu bytes (%.2f KB)\n", 
+                               gpu_id, required_shared_mem, required_shared_mem / 1024.0);
+                    } else {
+                        use_global_memory = true;
+                        printf("GPU %d: Auto-selected global memory kernel (shared memory %zu bytes exceeds limit %zu bytes)\n", 
+                               gpu_id, required_shared_mem, SHARED_MEM_LIMIT);
+                    }
+                }
+                
+                if (use_global_memory) {
+                    int threadsPerBlock_orig = 256;
+                    int blocksPerGrid_orig = (current_batch_size + threadsPerBlock_orig - 1) / threadsPerBlock_orig;
+                    
+                    process_lens_batch_kernel<<<blocksPerGrid_orig, threadsPerBlock_orig, 0, stream>>>(
+                        d_z_l_batch, d_d_com_l_batch, d_sin_ra_l_batch, d_cos_ra_l_batch, d_sin_dec_l_batch, d_cos_dec_l_batch, d_dist_3d_sq_bins_batch,
+                        d_z_s, d_d_com_s, d_sin_ra_s, d_cos_ra_s, d_sin_dec_s, d_cos_dec_s,
+                        d_w_s, d_e_1_s, d_e_2_s, d_z_l_max_s,
+                        d_unique_source_hp_coords_kdtree, d_unique_source_hp_ids, N_unique_source_hp, d_world_bounds, d_kdtree_to_original_mapping,
+                        d_all_source_hp_ids_sorted_gpu, d_sorted_source_original_indices_gpu,
+                        d_unique_hp_id_offsets_start_gpu, d_unique_hp_id_offsets_end_gpu,
+                        tables->has_sigma_crit_eff, tables->n_z_bins_l, d_sigma_crit_eff_l, d_z_bin_s,
+                        tables->has_m_s, d_m_s, tables->has_e_rms_s, d_e_rms_s, tables->has_R_2_s, d_R_2_s,
+                        tables->has_R_matrix_s, d_R_11_s, d_R_12_s, d_R_21_s, d_R_22_s,
+                        current_batch_size, tables->n_bins, tables->nside_healpix, tables->comoving, tables->weighting, global_lens_offset,
+                        d_knn_workspace_batch, max_k_for_this_gpu, gpu_id,
+                        d_sum_1_r_batch, d_sum_w_ls_r_batch, d_sum_w_ls_e_t_r_batch, d_sum_w_ls_e_t_sigma_crit_r_batch,
+                        d_sum_w_ls_z_s_r_batch, d_sum_w_ls_sigma_crit_r_batch, d_sum_w_ls_m_r_batch,
+                        d_sum_w_ls_1_minus_e_rms_sq_r_batch, d_sum_w_ls_A_p_R_2_r_batch, d_sum_w_ls_R_T_r_batch
+                    );
+                } else if (use_shared_memory) {
+                    process_lens_batch_kernel_optimized<<<blocksPerGrid, threadsPerBlock, required_shared_mem, stream>>>(
+                        d_z_l_batch, d_d_com_l_batch, d_sin_ra_l_batch, d_cos_ra_l_batch, d_sin_dec_l_batch, d_cos_dec_l_batch, d_dist_3d_sq_bins_batch,
+                        d_z_s, d_d_com_s, d_sin_ra_s, d_cos_ra_s, d_sin_dec_s, d_cos_dec_s,
+                        d_w_s, d_e_1_s, d_e_2_s, d_z_l_max_s,
+                        d_unique_source_hp_coords_kdtree, d_unique_source_hp_ids, N_unique_source_hp, d_world_bounds, d_kdtree_to_original_mapping,
+                        d_all_source_hp_ids_sorted_gpu, d_sorted_source_original_indices_gpu,
+                        d_unique_hp_id_offsets_start_gpu, d_unique_hp_id_offsets_end_gpu,
+                        tables->has_sigma_crit_eff, tables->n_z_bins_l, d_sigma_crit_eff_l, d_z_bin_s,
+                        tables->has_m_s, d_m_s, tables->has_e_rms_s, d_e_rms_s, tables->has_R_2_s, d_R_2_s,
+                        tables->has_R_matrix_s, d_R_11_s, d_R_12_s, d_R_21_s, d_R_22_s,
+                        current_batch_size, tables->n_bins, tables->nside_healpix, tables->comoving, tables->weighting, global_lens_offset,
+                        d_knn_workspace_batch, max_k_for_this_gpu, gpu_id,
+                        d_sum_1_r_batch, d_sum_w_ls_r_batch, d_sum_w_ls_e_t_r_batch, d_sum_w_ls_e_t_sigma_crit_r_batch,
+                        d_sum_w_ls_z_s_r_batch, d_sum_w_ls_sigma_crit_r_batch, d_sum_w_ls_m_r_batch,
+                        d_sum_w_ls_1_minus_e_rms_sq_r_batch, d_sum_w_ls_A_p_R_2_r_batch, d_sum_w_ls_R_T_r_batch
+                    );
+                }
+                                
                 size_t host_offset = (size_t)global_lens_offset * tables->n_bins;
                 CUDA_CHECK(cudaMemcpyAsync(tables->sum_1_r + host_offset, d_sum_1_r_batch, batch_output_bins * sizeof(long long), cudaMemcpyDeviceToHost, stream));
                 CUDA_CHECK(cudaMemcpyAsync(tables->sum_w_ls_r + host_offset, d_sum_w_ls_r_batch, batch_output_bins * sizeof(double), cudaMemcpyDeviceToHost, stream)); CUDA_CHECK(cudaMemcpyAsync(tables->sum_w_ls_e_t_r + host_offset, d_sum_w_ls_e_t_r_batch, batch_output_bins * sizeof(double), cudaMemcpyDeviceToHost, stream)); CUDA_CHECK(cudaMemcpyAsync(tables->sum_w_ls_e_t_sigma_crit_r + host_offset, d_sum_w_ls_e_t_sigma_crit_r_batch, batch_output_bins * sizeof(double), cudaMemcpyDeviceToHost, stream)); CUDA_CHECK(cudaMemcpyAsync(tables->sum_w_ls_z_s_r + host_offset, d_sum_w_ls_z_s_r_batch, batch_output_bins * sizeof(double), cudaMemcpyDeviceToHost, stream)); CUDA_CHECK(cudaMemcpyAsync(tables->sum_w_ls_sigma_crit_r + host_offset, d_sum_w_ls_sigma_crit_r_batch, batch_output_bins * sizeof(double), cudaMemcpyDeviceToHost, stream));

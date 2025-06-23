@@ -77,6 +77,8 @@ def precompute_gpu_wrapper(
     np.ndarray[np.double_t, ndim=1, mode="c"] sum_w_ls_R_T_r_np,
 
     int n_gpus,
+    force_shared=False,
+    force_global=False,
     ):
 
     cdef _precompute_cuda.TableData c_table_data
@@ -156,8 +158,8 @@ def precompute_gpu_wrapper(
     c_table_data.sum_w_ls_A_p_R_2_r = <double*>sum_w_ls_A_p_R_2_r_np.data if sum_w_ls_A_p_R_2_r_np is not None and has_R_2_s else NULL
     c_table_data.sum_w_ls_R_T_r = <double*>sum_w_ls_R_T_r_np.data if sum_w_ls_R_T_r_np is not None and has_R_matrix_s else NULL
 
-    # Call the C++ function
-    status = _precompute_cuda.precompute_cuda_interface(&c_table_data, n_gpus)
+    # Call the C++ function with the specified memory flags
+    status = _precompute_cuda.precompute_cuda_interface(&c_table_data, n_gpus, force_shared, force_global)
 
     # order_bytes goes out of scope here, C++ side must copy the string if needed beyond the call.
     # The C++ TableData in precompute_interface.h has std::string order_healpix,
@@ -171,3 +173,35 @@ def precompute_gpu_wrapper(
     # Or, return status if Python side wants to check it.
     # For now, let's assume void-like behavior on success, exception on failure.
     return None # Explicitly return None for clarity
+
+
+def check_max_k(long nside, int n_bins, np.ndarray[np.double_t, ndim=1, mode="c"] max_distances, bint force_shared):
+    """
+    Check if max_k for the given parameters fits in shared memory.
+    If force_shared is True and it doesn't fit, reduce nside until it does.
+    
+    Parameters
+    ----------
+    nside : long
+        HEALPix nside value
+    n_bins : int
+        Number of distance bins
+    max_distances : np.ndarray
+        Maximum distances for each lens
+    force_shared : bool
+        Whether to force shared memory usage
+        
+    Returns
+    -------
+    dict
+        Dictionary with 'adjusted_nside', 'max_k', and 'fits_in_shared_memory'
+    """
+    cdef int n_lenses = max_distances.shape[0]
+    cdef _precompute_cuda.MaxKCheckResult result = _precompute_cuda.check_max_k_for_precompute(
+        nside, n_bins, <double*>max_distances.data, n_lenses, force_shared)
+    
+    return {
+        'adjusted_nside': result.adjusted_nside,
+        'max_k': result.max_k,
+        'fits_in_shared_memory': result.fits_in_shared_memory
+    }

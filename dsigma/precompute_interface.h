@@ -101,15 +101,26 @@ struct TableData {
     {}
 };
 
-// Extern "C" interface function
+// Structure for max_k check results
+struct MaxKCheckResult {
+    long adjusted_nside;
+    int max_k;
+    bool fits_in_shared_memory;
+};
+
+// Interface functions
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-int precompute_cuda_interface(TableData* tables, int n_gpus);
+int precompute_cuda_interface(TableData* tables, int n_gpus, bool force_shared_memory, bool force_global_memory);
 
 #ifdef __cplusplus
 }
+
+// C++ only function (returns struct)
+MaxKCheckResult check_max_k_for_precompute(long nside, int n_bins, double* max_distances, int n_lenses, bool force_shared);
+
 #endif
 
 #endif // PRECOMPUTE_INTERFACE_H
