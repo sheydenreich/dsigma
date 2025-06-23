@@ -79,7 +79,7 @@ cdef extern from "precompute_interface.h": # Assumes precompute_interface.h is i
     
     # Changed to pass TableData by pointer as per C++ interface
     int precompute_cuda_interface(TableData* table_data_ptr, int n_gpus, bint force_shared_memory, bint force_global_memory)
-    MaxKCheckResult check_max_k_for_precompute(long nside, int n_bins, double* max_distances, int n_lenses, bint force_shared)
+    MaxKCheckResult check_max_k_for_precompute(long nside, int n_bins, double max_distance_sq_estimate, int n_lenses, bint force_shared)
 
 
 # For numpy arrays

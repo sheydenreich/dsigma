@@ -287,9 +287,11 @@ def precompute(
             
             # Estimate maximum distance bins to calculate max_k
             # We need to do this before HEALPix pixelization 
-            z_l = np.array(table_l['z'])
-            d_com_l = np.array([cosmology.comoving_transverse_distance(z).to(u.Mpc).value for z in z_l])
-            
+            z_l_min = np.min(table_l['z'])
+            d_com_l_min = cosmology.comoving_transverse_distance(z_l_min).to(u.Mpc).value
+            # TODO: We calculate max_k for the worst-case lens, which we assume to be the one closest to the observer.
+            # If in the future lenses behind the turnover point of the angular diameter distence are included,
+            # in case of comoving=False, this could be inaccurate. 
             # Convert bins to theta_bins (estimate)
             if not isinstance(bins, u.quantity.Quantity):
                 bins_quantity = bins * u.Mpc
@@ -299,16 +301,15 @@ def precompute(
             try:
                 theta_bins_max = np.amax(bins_quantity.to(u.rad).value)
             except UnitConversionError:
-                theta_bins_max = np.amax(bins_quantity.to(u.Mpc).value / np.amin(d_com_l))
+                theta_bins_max = np.amax(bins_quantity.to(u.Mpc).value / d_com_l_min)
                 if not comoving:
-                    theta_bins_max *= (1 + np.amax(z_l))
+                    theta_bins_max *= (1 + z_l_min)
             
             # Estimate maximum dist_3d_sq for max_k calculation
             max_dist_3d_sq_estimate = min(4 * np.sin(theta_bins_max / 2.0)**2, 2.0)
-            max_distances_estimate = np.full(len(table_l), max_dist_3d_sq_estimate)
             
             # Check max_k requirements and adjust nside if necessary
-            max_k_result = check_max_k(nside, len(bins) - 1, max_distances_estimate, True)
+            max_k_result = check_max_k(nside, len(bins) - 1, max_dist_3d_sq_estimate, len(table_l), True)
             original_nside = nside
             nside = max_k_result['adjusted_nside']
             

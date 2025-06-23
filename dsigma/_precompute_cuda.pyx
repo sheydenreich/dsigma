@@ -175,7 +175,7 @@ def precompute_gpu_wrapper(
     return None # Explicitly return None for clarity
 
 
-def check_max_k(long nside, int n_bins, np.ndarray[np.double_t, ndim=1, mode="c"] max_distances, bint force_shared):
+def check_max_k(long nside, int n_bins, double max_distance_sq_estimate, int n_lenses, bint force_shared):
     """
     Check if max_k for the given parameters fits in shared memory.
     If force_shared is True and it doesn't fit, reduce nside until it does.
@@ -186,8 +186,10 @@ def check_max_k(long nside, int n_bins, np.ndarray[np.double_t, ndim=1, mode="c"
         HEALPix nside value
     n_bins : int
         Number of distance bins
-    max_distances : np.ndarray
-        Maximum distances for each lens
+    max_distance_sq_estimate : double
+        Estimated maximum distance squared for worst-case lens
+    n_lenses : int
+        Number of lenses (for workspace scaling)
     force_shared : bool
         Whether to force shared memory usage
         
@@ -196,9 +198,8 @@ def check_max_k(long nside, int n_bins, np.ndarray[np.double_t, ndim=1, mode="c"
     dict
         Dictionary with 'adjusted_nside', 'max_k', and 'fits_in_shared_memory'
     """
-    cdef int n_lenses = max_distances.shape[0]
     cdef _precompute_cuda.MaxKCheckResult result = _precompute_cuda.check_max_k_for_precompute(
-        nside, n_bins, <double*>max_distances.data, n_lenses, force_shared)
+        nside, n_bins, max_distance_sq_estimate, n_lenses, force_shared)
     
     return {
         'adjusted_nside': result.adjusted_nside,

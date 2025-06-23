@@ -119,7 +119,7 @@ int precompute_cuda_interface(TableData* tables, int n_gpus, bool force_shared_m
 }
 
 // C++ only function (returns struct)
-MaxKCheckResult check_max_k_for_precompute(long nside, int n_bins, double* max_distances, int n_lenses, bool force_shared);
+MaxKCheckResult check_max_k_for_precompute(long nside, int n_bins, double max_distance_sq_estimate, int n_lenses, bool force_shared);
 
 #endif
 

@@ -192,25 +192,20 @@ MaxKCheckResult check_max_k_requirements(
 MaxKCheckResult check_max_k_for_precompute(
     long nside,
     int n_bins, 
-    double* max_distances,
+    double max_distance_sq_estimate,
     int n_lenses,
     bool force_shared
 ) {
-    // Find the maximum search radius from all lenses
-    double max_search_radius_sq = 0.0;
+    // Calculate search radius for the worst-case lens (highest search radius)
     double lens_hp_pixrad = get_max_pixrad_gpu_host(nside);
     double pixrad_3d_sq = 4.0 * sin(lens_hp_pixrad * 0.5) * sin(lens_hp_pixrad * 0.5);
+    double max_search_radius_sq = max_distance_sq_estimate + (4.0 * pixrad_3d_sq) + 
+                                 4.0 * sqrt(pixrad_3d_sq * max_distance_sq_estimate);
     
-    for (int i = 0; i < n_lenses; ++i) {
-        double max_dist_3d_sq_lens = max_distances[i];
-        double search_radius_sq = max_dist_3d_sq_lens + (4.0 * pixrad_3d_sq) + 
-                                 4.0 * sqrt(pixrad_3d_sq * max_dist_3d_sq_lens);
-        if (search_radius_sq > max_search_radius_sq) {
-            max_search_radius_sq = search_radius_sq;
-        }
-    }
+    MaxKCheckResult result = check_max_k_requirements(nside, n_bins, max_search_radius_sq, force_shared);
     
-    return check_max_k_requirements(nside, n_bins, max_search_radius_sq, force_shared);
+    
+    return result;
 }
 
 
@@ -781,7 +776,19 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
             h_kdtree_to_original_mapping[i] = h_reordered_points[i].original_index;
         }
         std::cout << "KD-Tree pre-build complete." << std::endl;
+        
+        // Ensure GPU 0 operations are complete and reset device state to prevent
+        // context inheritance issues in the multi-GPU OpenMP parallel region
+        CUDA_CHECK(cudaDeviceSynchronize());
+        std::cout << "GPU 0 synchronized after KD-tree building." << std::endl;
     }
+    
+    // Reset all CUDA devices to ensure clean state before multi-GPU execution
+    for (int gpu_id = 0; gpu_id < n_gpus_to_use; ++gpu_id) {
+        CUDA_CHECK(cudaSetDevice(gpu_id));
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
+    std::cout << "All GPUs synchronized and ready for parallel execution." << std::endl;
     
     // --- 3. MULTI-GPU EXECUTION WITH DYNAMIC BATCHING ---
     std::cout << "Starting computation on " << n_gpus_to_use << " GPU(s)..." << std::endl;
