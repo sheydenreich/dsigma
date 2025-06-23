@@ -53,6 +53,43 @@ def test_precompute(test_catalogs, assert_close=True, gpu_node=False):
     else:
         return precomputed_table_gpu, precomputed_table_gpu_shared, precomputed_table_gpu_global, precomputed_table_cpu
 
+def test_nside_performance(test_catalogs, assert_close=True, gpu_node=False):
+    table_l, table_s = test_catalogs
+    n_bins = 30
+    theta_bins = np.logspace(0, 1, n_bins + 1) * u.deg
+    if gpu_node:
+        n_jobs_gpu = 4
+        n_jobs_cpu = 128
+    else:
+        n_jobs_gpu = 1
+        n_jobs_cpu = 20
+
+    times = []
+    nsides = []
+    nside = 256
+    times.append(time())
+    while nside >= 16:
+        print(f"nside: {nside}")
+        precomputed_table_gpu = precompute(table_l.copy(), table_s, theta_bins,
+                                                  use_gpu=True, n_jobs=n_jobs_gpu, nside=nside)
+        times.append(time())
+        precomputed_table_gpu_shared = precompute(table_l.copy(), table_s, theta_bins,
+                                                  use_gpu=True, n_jobs=n_jobs_gpu, nside=nside, force_shared=True)
+        times.append(time())
+        precomputed_table_gpu_global = precompute(table_l.copy(), table_s, theta_bins,
+                                            use_gpu=True, n_jobs=n_jobs_gpu, nside=nside,
+                                            force_global=True)
+
+        times.append(time())
+        nsides.append(nside)
+        nside = nside // 2
+        print(f"nside: {nsides[-1]} auto time: {times[-3] - times[-4]:.4f} seconds, shared time: {times[-2] - times[-3]:.4f} seconds, global time: {times[-1] - times[-2]:.4f} seconds")
+
+    for i in range(len(nsides)):
+        print(f"nside: {nsides[i]} auto time: {times[3*i+1] - times[3*i]:.4f}, shared time: {times[3*i+2] - times[3*i+1]:.4f}, global time: {times[3*i+3] - times[3*i+2]:.4f}")
+
+    return nsides, times
+
 if __name__ == "__main__":
     import numpy as np
     from astropy.table import Table
@@ -79,6 +116,9 @@ if __name__ == "__main__":
     import sys
     gpu_node = ('--gpu-node' in sys.argv)
     print(f"Running on GPU node: {gpu_node}")
+
+    # nsides, times = test_nside_performance((table_l, table_s),assert_close=False,gpu_node = gpu_node)
+
     tab_l_gpu, tab_l_gpu_shared, tab_l_gpu_global, tab_l_cpu = test_precompute((table_l, table_s),assert_close=False,gpu_node = gpu_node)
 
     # print(tab_l_gpu)
