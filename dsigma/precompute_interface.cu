@@ -1,6 +1,5 @@
 #include "precompute_interface.h"
 #include "precompute_engine_cuda.h" // For launching the kernel and physics
-#include "cuda_host_utils.h"      // For Healpix utilities on host
 #include "healpix_gpu.h"          // For GPU-side HEALPix functions
 #include "../cudaKDTree/cukd/common.h"
 #include "../cudaKDTree/cukd/data.h"
