@@ -106,60 +106,6 @@ function(cython_add_module MODULE_NAME CYTHON_FILE)
     target_include_directories(${MODULE_NAME} PRIVATE ${Python_INCLUDE_DIRS})
 endfunction()
 
-# Find HEALPIX library with multiple search paths
-find_path(HEALPIX_INCLUDE_DIR 
-    NAMES healpix_cxx.h healpix_base.h
-    HINTS 
-        ${CONDA_PREFIX}/include
-        $ENV{CONDA_PREFIX}/include
-        /usr/local/include
-        /usr/include
-        /opt/conda/include
-        ${CMAKE_PREFIX_PATH}/include
-    PATH_SUFFIXES healpix_cxx healpix
-)
-
-find_library(HEALPIX_LIBRARY 
-    NAMES healpix_cxx libhealpix_cxx
-    HINTS 
-        ${CONDA_PREFIX}/lib
-        $ENV{CONDA_PREFIX}/lib
-        /usr/local/lib
-        /usr/lib
-        /opt/conda/lib
-        ${CMAKE_PREFIX_PATH}/lib
-    PATH_SUFFIXES healpix_cxx healpix
-)
-
-if(NOT HEALPIX_INCLUDE_DIR OR NOT HEALPIX_LIBRARY)
-    message(WARNING "Could not find healpix_cxx library. Trying alternative approaches...")
-    
-    # Try pkg-config as fallback
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(HEALPIX QUIET healpix_cxx)
-        if(HEALPIX_FOUND)
-            set(HEALPIX_INCLUDE_DIR ${HEALPIX_INCLUDE_DIRS})
-            set(HEALPIX_LIBRARY ${HEALPIX_LIBRARIES})
-            message(STATUS "Found HEALPix via pkg-config")
-        endif()
-    endif()
-    
-    if(NOT HEALPIX_INCLUDE_DIR OR NOT HEALPIX_LIBRARY)
-        message(WARNING "Could not find healpix_cxx. Building without HEALPix support.")
-        set(HEALPIX_FOUND 0)
-    endif()
-endif()
-
-if(HEALPIX_INCLUDE_DIR AND HEALPIX_LIBRARY)
-    message(STATUS "Found HEALPix include directory: ${HEALPIX_INCLUDE_DIR}")
-    message(STATUS "Found HEALPix library: ${HEALPIX_LIBRARY}")
-    add_definitions(-DHEALPIX_FOUND=1)
-    set(HEALPIX_FOUND 1)
-else()
-    add_definitions(-DHEALPIX_FOUND=0)
-    set(HEALPIX_FOUND 0)
-endif()
 
 # --- Build the CUDA Extension (_precompute_cuda) ---
 cython_sources(CUDA_CYTHON_SRC dsigma/_precompute_cuda.pyx)
@@ -167,7 +113,6 @@ add_library(_precompute_cuda SHARED
     ${CUDA_CYTHON_SRC}
     dsigma/precompute_engine_cuda.cu
     dsigma/precompute_interface.cu
-    dsigma/cuda_host_utils.cpp
     dsigma/healpix_gpu.cu
 )
 set_property(TARGET _precompute_cuda PROPERTY CUDA_SEPARABLE_COMPILATION ON)
@@ -185,9 +130,6 @@ target_link_libraries(_precompute_cuda PRIVATE
 if(OpenMP_CXX_FOUND)
     target_link_libraries(_precompute_cuda PRIVATE OpenMP::OpenMP_CXX)
     target_compile_definitions(_precompute_cuda PRIVATE OPENMP_FOUND)
-endif()
-if(HEALPIX_FOUND)
-    target_link_libraries(_precompute_cuda PRIVATE ${HEALPIX_LIBRARY})
 endif()
 
 target_include_directories(_precompute_cuda PRIVATE
