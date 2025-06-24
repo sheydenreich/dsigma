@@ -17,11 +17,11 @@ from .physics import critical_surface_density
 from .physics import effective_critical_surface_density
 from .precompute_engine import precompute_engine
 
-# try:
-from ._precompute_cuda import precompute_gpu_wrapper
-GPU_AVAILABLE = True
-# except ImportError:
-    # GPU_AVAILABLE = False
+try:
+    from ._precompute_cuda import precompute_gpu_wrapper
+    GPU_AVAILABLE = True
+except ImportError:
+    GPU_AVAILABLE = False
 
 
 __all__ = ["photo_z_dilution_factor", "mean_photo_z_offset", "precompute"]
