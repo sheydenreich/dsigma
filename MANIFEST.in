@@ -10,6 +10,4 @@ include dsigma/_precompute_cuda.pyx
 include dsigma/_precompute_cuda.pxd
 include dsigma/precompute_interface.cu
 include dsigma/precompute_interface.h
-include dsigma/cuda_host_utils.cpp
-include dsigma/cuda_host_utils.h
 include dsigma/precompute_engine_cuda.h
