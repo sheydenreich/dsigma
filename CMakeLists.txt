@@ -7,27 +7,23 @@ find_package(CUDAToolkit REQUIRED)
 find_package(Python REQUIRED COMPONENTS Interpreter Development)
 
 # --- Add OpenMP support ---
-find_package(OpenMP)
-if(OpenMP_CXX_FOUND)
-    message(STATUS "Found OpenMP: ${OpenMP_CXX_VERSION}")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
-    
-    # Fix for OpenMP library path issues
-    string(REPLACE ";" " " OpenMP_CXX_LIBRARIES_FIXED "${OpenMP_CXX_LIBRARIES}")
-    set(OpenMP_CXX_LIBRARIES "${OpenMP_CXX_LIBRARIES_FIXED}")
-
-    if(WIN32)
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /openmp:llvm")
-        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=/openmp:llvm")
-    else()
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
-        # For NVCC compiler, need to pass OpenMP flags differently
-        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=${OpenMP_CXX_FLAGS}")
-        set(CMAKE_CUDA_HOST_LINK_LAUNCHER "${CMAKE_CXX_COMPILER}")
-        set(CMAKE_CUDA_STANDARD_LIBRARIES "${CMAKE_CUDA_STANDARD_LIBRARIES} ${OpenMP_CXX_LIBRARIES}")
-    endif()
+# CHANGE 3: Remove the failing `find_package(OpenMP)` call.
+# In complex build environments like pip/scikit-build-core on NERSC,
+# find_package can fail. We will now unconditionally add the OpenMP
+# flags, assuming a standard GCC/Clang environment on Linux.
+if(NOT WIN32)
+    message(STATUS "Unconditionally setting OpenMP flags for non-Windows build.")
+    set(OpenMP_FLAGS "-fopenmp")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_FLAGS}")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=${OpenMP_FLAGS}")
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${OpenMP_FLAGS}")
 else()
-    message(WARNING "OpenMP not found. Multi-GPU processing will be disabled (sequential execution).")
+    # Windows-specific flags
+    message(STATUS "Setting OpenMP flags for Windows build.")
+    set(OpenMP_FLAGS "/openmp")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_FLAGS}")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=${OpenMP_FLAGS}")
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${OpenMP_FLAGS}")
 endif()
 
 # Find NumPy - modern approach that works with current NumPy versions
@@ -117,20 +113,20 @@ add_library(_precompute_cuda SHARED
 )
 set_property(TARGET _precompute_cuda PROPERTY CUDA_SEPARABLE_COMPILATION ON)
 
-# Set CUDA architectures for compatibility with older GPUs
 set_property(TARGET _precompute_cuda PROPERTY CUDA_ARCHITECTURES "70;75;80;86")
 set_target_properties(_precompute_cuda PROPERTIES PREFIX "")
 if(WIN32)
     set_target_properties(_precompute_cuda PROPERTIES SUFFIX ".pyd")
 endif()
+
+# Since we are not using find_package, we cannot link to OpenMP::OpenMP_CXX.
+# However, the CMAKE_SHARED_LINKER_FLAGS set above will handle the linking.
 target_link_libraries(_precompute_cuda PRIVATE
     CUDA::cudart
     ${Python_LIBRARIES}
 )
-if(OpenMP_CXX_FOUND)
-    target_link_libraries(_precompute_cuda PRIVATE OpenMP::OpenMP_CXX)
-    target_compile_definitions(_precompute_cuda PRIVATE OPENMP_FOUND)
-endif()
+target_compile_definitions(_precompute_cuda PRIVATE OPENMP_FOUND)
+
 
 target_include_directories(_precompute_cuda PRIVATE
     ${Python_INCLUDE_DIRS}
@@ -139,9 +135,7 @@ target_include_directories(_precompute_cuda PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/dsigma
     ${CMAKE_CURRENT_SOURCE_DIR}/cudaKDTree
 )
-if(HEALPIX_FOUND)
-    target_include_directories(_precompute_cuda PRIVATE ${HEALPIX_INCLUDE_DIR})
-endif()
+
 
 # --- Build the regular Cython Extension (precompute_engine) ---
 cython_add_module(precompute_engine
@@ -151,6 +145,7 @@ target_include_directories(precompute_engine PRIVATE
     ${Python_INCLUDE_DIRS}
     ${NumPy_INCLUDE_DIRS}
 )
+
 
 # --- Install both compiled libraries into the package ---
 install(TARGETS _precompute_cuda precompute_engine
