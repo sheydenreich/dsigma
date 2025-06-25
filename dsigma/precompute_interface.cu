@@ -1,11 +1,11 @@
 #include "precompute_interface.h"
 #include "precompute_engine_cuda.h" // For launching the kernel and physics
 #include "healpix_gpu.h"          // For GPU-side HEALPix functions
-#include "../cudaKDTree/cukd/common.h"
-#include "../cudaKDTree/cukd/data.h"
-#include "../cudaKDTree/cukd/builder.h"
-#include "../cudaKDTree/cukd/knn.h"
-#include "../cudaKDTree/cukd/box.h"
+#include "../include/cudaKDTree/cukd/common.h"
+#include "../include/cudaKDTree/cukd/data.h"
+#include "../include/cudaKDTree/cukd/builder.h"
+#include "../include/cudaKDTree/cukd/knn.h"
+#include "../include/cudaKDTree/cukd/box.h"
 #include <cfloat>
 #include <cuda_runtime.h>
 #include <vector_types.h>

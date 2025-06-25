@@ -133,7 +133,7 @@ target_include_directories(_precompute_cuda PRIVATE
     ${CUDAToolkit_INCLUDE_DIRS}
     ${NumPy_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}/dsigma
-    ${CMAKE_CURRENT_SOURCE_DIR}/cudaKDTree
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/cudaKDTree
 )
 
 

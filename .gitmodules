@@ -1,0 +1,3 @@
+[submodule "include/cudaKDTree"]
+	path = include/cudaKDTree
+	url = https://github.com/ingowald/cudaKDTree
