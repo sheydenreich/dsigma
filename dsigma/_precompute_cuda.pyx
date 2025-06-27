@@ -79,6 +79,7 @@ def precompute_gpu_wrapper(
     int n_gpus,
     force_shared=False,
     force_global=False,
+    verbose=False,
     ):
 
     cdef _precompute_cuda.TableData c_table_data
@@ -159,7 +160,7 @@ def precompute_gpu_wrapper(
     c_table_data.sum_w_ls_R_T_r = <double*>sum_w_ls_R_T_r_np.data if sum_w_ls_R_T_r_np is not None and has_R_matrix_s else NULL
 
     # Call the C++ function with the specified memory flags
-    status = _precompute_cuda.precompute_cuda_interface(&c_table_data, n_gpus, force_shared, force_global)
+    status = _precompute_cuda.precompute_cuda_interface(&c_table_data, n_gpus, force_shared, force_global, verbose)
 
     # order_bytes goes out of scope here, C++ side must copy the string if needed beyond the call.
     # The C++ TableData in precompute_interface.h has std::string order_healpix,

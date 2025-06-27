@@ -597,7 +597,8 @@ def precompute(
                 sum_w_ls_A_p_R_2_r_np, sum_w_ls_R_T_r_np,
                 n_gpus=n_jobs,
                 force_shared=force_shared,
-                force_global=force_global
+                force_global=force_global,
+                verbose=progress_bar
             )
             # Results are in table_engine_r, processing below will handle them.
 

@@ -713,7 +713,7 @@ void process_lens_batch_kernel_optimized(
     );
 }
 
-int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_shared_memory, bool force_global_memory) {
+int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_shared_memory, bool force_global_memory, bool verbose) {
     // --- 1. Input Validation (unchanged) ---
     if (!tables->z_l || !tables->d_com_l || !tables->sin_ra_l || !tables->cos_ra_l || !tables->sin_dec_l || !tables->cos_dec_l || !tables->z_s || !tables->d_com_s || !tables->sin_ra_s || !tables->cos_ra_s || !tables->sin_dec_s || !tables->cos_dec_s || !tables->w_s || !tables->e_1_s || !tables->e_2_s || !tables->z_l_max_s || !tables->healpix_id_s || !tables->dist_3d_sq_bins || !tables->sum_1_r || !tables->sum_w_ls_r || !tables->sum_w_ls_e_t_r || !tables->sum_w_ls_e_t_sigma_crit_r || !tables->sum_w_ls_z_s_r || !tables->sum_w_ls_sigma_crit_r) { std::cerr << "Error: Essential data pointers in TableData are null." << std::endl; return -1; }
     if (tables->has_sigma_crit_eff && (!tables->sigma_crit_eff_l || !tables->z_bin_s)) { std::cerr << "Error: sigma_crit_eff pointers are null." << std::endl; return -1; }
@@ -760,7 +760,7 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
         CUDA_CHECK(cudaMalloc(&d_temp_bounds, sizeof(cukd::box_t<float3>)));
         CUDA_CHECK(cudaMemcpy(d_temp_points, h_points_with_indices.data(), N_unique_source_hp * sizeof(PointWithIndex), cudaMemcpyHostToDevice));
         
-        std::cout << "Building cudaKDTree on GPU 0..." << std::endl;
+        if (verbose) std::cout << "Building cudaKDTree on GPU 0..." << std::endl;
         cukd::buildTree<PointWithIndex, PointWithIndexTraits>(d_temp_points, N_unique_source_hp, d_temp_bounds);
         
         std::vector<PointWithIndex> h_reordered_points(N_unique_source_hp);
@@ -774,12 +774,12 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
             h_unique_source_hp_coords_kdtree[i] = h_reordered_points[i].coord; 
             h_kdtree_to_original_mapping[i] = h_reordered_points[i].original_index;
         }
-        std::cout << "KD-Tree pre-build complete." << std::endl;
+        if (verbose) std::cout << "KD-Tree pre-build complete." << std::endl;
         
         // Ensure GPU 0 operations are complete and reset device state to prevent
         // context inheritance issues in the multi-GPU OpenMP parallel region
         CUDA_CHECK(cudaDeviceSynchronize());
-        std::cout << "GPU 0 synchronized after KD-tree building." << std::endl;
+        if (verbose) std::cout << "GPU 0 synchronized after KD-tree building." << std::endl;
     }
     
     // Reset all CUDA devices to ensure clean state before multi-GPU execution
@@ -787,10 +787,10 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
         CUDA_CHECK(cudaSetDevice(gpu_id));
         CUDA_CHECK(cudaDeviceSynchronize());
     }
-    std::cout << "All GPUs synchronized and ready for parallel execution." << std::endl;
+    if (verbose) std::cout << "All GPUs synchronized and ready for parallel execution." << std::endl;
     
     // --- 3. MULTI-GPU EXECUTION WITH DYNAMIC BATCHING ---
-    std::cout << "Starting computation on " << n_gpus_to_use << " GPU(s)..." << std::endl;
+    if (verbose) std::cout << "Starting computation on " << n_gpus_to_use << " GPU(s)..." << std::endl;
 
     #pragma omp parallel for num_threads(n_gpus_to_use)
     for (int gpu_id = 0; gpu_id < n_gpus_to_use; ++gpu_id) {
@@ -799,7 +799,7 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
         cudaStream_t stream;
         CUDA_CHECK(cudaStreamCreate(&stream));
 
-        printf("GPU %d: Thread %d checking in.\n", gpu_id, omp_get_thread_num());
+        if (verbose) printf("GPU %d: Thread %d checking in.\n", gpu_id, omp_get_thread_num());
 
         // --- B. REPLICATE SHARED DATA ON THIS GPU ---
         double *d_z_s, *d_d_com_s, *d_sin_ra_s, *d_cos_ra_s, *d_sin_dec_s, *d_cos_dec_s, *d_w_s, *d_e_1_s, *d_e_2_s, *d_z_l_max_s;
@@ -835,7 +835,7 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
         int num_lenses_for_this_gpu = end_lens_idx - start_lens_idx;
 
         if (num_lenses_for_this_gpu <= 0) {
-            printf("GPU %d has no lenses to process.\n", gpu_id);
+            if (verbose) printf("GPU %d has no lenses to process.\n", gpu_id);
         } else {
             int max_k_for_this_gpu = 32;
             double lens_hp_pixrad = get_max_pixrad_gpu_host(tables->nside_healpix);
@@ -858,7 +858,7 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
             if (batch_size == 0) batch_size = 1;
             if (batch_size > num_lenses_for_this_gpu) batch_size = num_lenses_for_this_gpu;
 
-            printf("GPU %d processing lenses [%d, %d). Max K: %d. Available VRAM: %.2f GB. Decided batch size: %d lenses.\n", gpu_id, start_lens_idx, end_lens_idx, max_k_for_this_gpu, free_mem / (1024.0*1024.0*1024.0), batch_size);
+            if (verbose) printf("GPU %d processing lenses [%d, %d). Max K: %d. Available VRAM: %.2f GB. Decided batch size: %d lenses.\n", gpu_id, start_lens_idx, end_lens_idx, max_k_for_this_gpu, free_mem / (1024.0*1024.0*1024.0), batch_size);
 
             int lenses_processed = 0;
             while(lenses_processed < num_lenses_for_this_gpu) {
@@ -891,7 +891,7 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
                                        max_k_for_this_gpu * sizeof(KnnCandidate) + // KD-tree workspace (shared by all threads)
                                        max_k_for_this_gpu * sizeof(int); // Candidate indices
                 
-                printf("GPU %d: Shared memory size: %zu bytes (%.2f KB). Max per block: 48KB\n", 
+                if (verbose) printf("GPU %d: Shared memory size: %zu bytes (%.2f KB). Max per block: 48KB\n", 
                        gpu_id, shared_mem_size, shared_mem_size / 1024.0);
                 
                 // Calculate required shared memory for optimized kernel
@@ -900,7 +900,7 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
                                            max_k_for_this_gpu * sizeof(KnnCandidate) + // KD-tree workspace
                                            max_k_for_this_gpu * sizeof(int); // Candidate indices
                 
-                printf("GPU %d: Required shared memory: %zu bytes (%.2f KB) for max_k=%d\n", 
+                if (verbose) printf("GPU %d: Required shared memory: %zu bytes (%.2f KB) for max_k=%d\n", 
                        gpu_id, required_shared_mem, required_shared_mem / 1024.0, max_k_for_this_gpu);
                 
                 // Determine which kernel to use based on memory mode flags
@@ -909,22 +909,22 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
                 
                 if (force_global_memory) {
                     use_global_memory = true;
-                    printf("GPU %d: Forced to use global memory kernel\n", gpu_id);
+                    if (verbose) printf("GPU %d: Forced to use global memory kernel\n", gpu_id);
                 } else if (force_shared_memory) {
                     // force_shared_memory is true, so we should already have adjusted nside 
                     // to ensure max_k fits in shared memory
                     use_shared_memory = true;
-                    printf("GPU %d: Forced to use shared memory kernel: %zu bytes (%.2f KB)\n", 
+                    if (verbose) printf("GPU %d: Forced to use shared memory kernel: %zu bytes (%.2f KB)\n", 
                            gpu_id, required_shared_mem, required_shared_mem / 1024.0);
                 } else {
                     // Auto-determine based on whether it fits in shared memory
                     if (required_shared_mem <= SHARED_MEM_LIMIT) {
                         use_shared_memory = true;
-                        printf("GPU %d: Auto-selected shared memory kernel: %zu bytes (%.2f KB)\n", 
+                        if (verbose) printf("GPU %d: Auto-selected shared memory kernel: %zu bytes (%.2f KB)\n", 
                                gpu_id, required_shared_mem, required_shared_mem / 1024.0);
                     } else {
                         use_global_memory = true;
-                        printf("GPU %d: Auto-selected global memory kernel (shared memory %zu bytes exceeds limit %zu bytes)\n", 
+                        if (verbose) printf("GPU %d: Auto-selected global memory kernel (shared memory %zu bytes exceeds limit %zu bytes)\n", 
                                gpu_id, required_shared_mem, SHARED_MEM_LIMIT);
                     }
                 }
@@ -983,7 +983,7 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
                 if (tables->has_m_s) CUDA_CHECK(cudaFree(d_sum_w_ls_m_r_batch)); if (tables->has_e_rms_s) CUDA_CHECK(cudaFree(d_sum_w_ls_1_minus_e_rms_sq_r_batch)); if (tables->has_R_2_s) CUDA_CHECK(cudaFree(d_sum_w_ls_A_p_R_2_r_batch)); if (tables->has_R_matrix_s) CUDA_CHECK(cudaFree(d_sum_w_ls_R_T_r_batch));
                 
                 lenses_processed += current_batch_size;
-                printf("GPU %d: Completed batch. Total lenses processed on this GPU: %d / %d\n", gpu_id, lenses_processed, num_lenses_for_this_gpu);
+                if (verbose) printf("GPU %d: Completed batch. Total lenses processed on this GPU: %d / %d\n", gpu_id, lenses_processed, num_lenses_for_this_gpu);
             }
         }
         
@@ -999,9 +999,9 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
             if(d_unique_hp_id_offsets_start_gpu) CUDA_CHECK(cudaFree(d_unique_hp_id_offsets_start_gpu)); if(d_unique_hp_id_offsets_end_gpu) CUDA_CHECK(cudaFree(d_unique_hp_id_offsets_end_gpu));
         }
         CUDA_CHECK(cudaStreamDestroy(stream));
-        printf("GPU %d: Work complete. Cleaning up.\n", gpu_id);
+        if (verbose) printf("GPU %d: Work complete. Cleaning up.\n", gpu_id);
     } // End of omp parallel for loop
 
-    std::cout << "precompute_cuda_interface completed successfully for all GPUs." << std::endl;
+    if (verbose) std::cout << "precompute_cuda_interface completed successfully for all GPUs." << std::endl;
     return 0; // Success
 }

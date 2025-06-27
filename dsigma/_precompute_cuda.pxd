@@ -78,7 +78,7 @@ cdef extern from "precompute_interface.h": # Assumes precompute_interface.h is i
         bint fits_in_shared_memory
     
     # Changed to pass TableData by pointer as per C++ interface
-    int precompute_cuda_interface(TableData* table_data_ptr, int n_gpus, bint force_shared_memory, bint force_global_memory)
+    int precompute_cuda_interface(TableData* table_data_ptr, int n_gpus, bint force_shared_memory, bint force_global_memory, bint verbose)
     MaxKCheckResult check_max_k_for_precompute(long nside, int n_bins, double max_distance_sq_estimate, int n_lenses, bint force_shared)
 
 

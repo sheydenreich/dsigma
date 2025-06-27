@@ -113,7 +113,7 @@ struct MaxKCheckResult {
 extern "C" {
 #endif
 
-int precompute_cuda_interface(TableData* tables, int n_gpus, bool force_shared_memory, bool force_global_memory);
+int precompute_cuda_interface(TableData* tables, int n_gpus, bool force_shared_memory, bool force_global_memory, bool verbose);
 
 #ifdef __cplusplus
 }
