@@ -135,6 +135,41 @@ def selection_bias_factor(table_l):
 
     """
     return (
-        np.sum(table_l['sum w_ls A p(R_2=0.3)'] *
+        np.sum(0.00865 * table_l['sum w_ls p(R_2=0.3)'] *
                table_l['w_sys'][:, None], axis=0) /
         np.sum(table_l['sum w_ls'] * table_l['w_sys'][:, None], axis=0))
+
+def additive_shear_bias(table_l,statistic):
+    if statistic == "deltasigma":
+        target_col = 'sum w_ls sigma_crit c'
+    elif statistic == "gammat":
+        target_col = 'sum w_ls c'
+    else:
+        raise ValueError("Invalid statistic option = {}".format(statistic))
+    return (np.sum(table_l[target_col]*table_l['w_sys'][:,None],axis=0) / 
+            np.sum(table_l['sum w_ls']*table_l['w_sys'][:,None],axis=0) )
+    
+def selection_bias_y3(table_l,return_error=False):
+    pedgeM = (np.sum(table_l['sum w_ls p(A=25.5)'] * table_l['w_sys'][:,None],axis=0) /
+              np.sum(table_l['sum w_ls'] * table_l['w_sys'][:,None],axis=0))
+    pedgeR = (np.sum(table_l['sum w_ls p(R_2=0.3)'] * table_l['w_sys'][:,None],axis=0) /
+              np.sum(table_l['sum w_ls'] * table_l['w_sys'][:,None],axis=0))
+
+    m_sel = -0.059 * pedgeM + 0.019 * pedgeR
+    a_sel = 0.0064 * pedgeM + 0.0063 * pedgeR
+
+    if return_error:
+        # assume the errors for 2 cuts are independent.
+        m_err = np.sqrt((0.0089 * pedgeM) ** 2.0 + (0.0013 * pedgeR) ** 2.0)
+        a_err = np.sqrt((0.0034 * pedgeM) ** 2.0 + (0.0009 * pedgeR) ** 2.0)
+        return m_sel,a_sel,m_err,a_err
+
+    return m_sel,a_sel
+
+def deltasigma_psf(table_l):
+    return (np.sum(table_l['sum w_ls sigma_crit e_psf']*table_l['w_sys'][:,None],axis=0) / 
+            np.sum(table_l['sum w_ls']*table_l['w_sys'][:,None],axis=0))
+
+def gammat_psf(table_l):
+    return (np.sum(table_l['sum w_ls e_psf']*table_l['w_sys'][:,None],axis=0) / 
+            np.sum(table_l['sum w_ls']*table_l['w_sys'][:,None],axis=0))

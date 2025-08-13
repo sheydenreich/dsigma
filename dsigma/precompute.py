@@ -466,7 +466,10 @@ def precompute(
         key_list.append('sum w_ls (1 - e_rms^2)')
 
     if 'R_2' in table_s.colnames:
-        key_list.append('sum w_ls A p(R_2=0.3)')
+        key_list.append('sum w_ls p(R_2=0.3)')
+
+    if 'magA' in table_s.colnames:
+        key_list.append('sum w_ls p(A=25.5)')
 
     if (('R_11' in table_s.colnames) and ('R_12' in table_s.colnames) and
             ('R_21' in table_s.colnames) and ('R_22' in table_s.colnames)):
