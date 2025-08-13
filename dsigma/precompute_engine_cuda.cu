@@ -226,6 +226,10 @@ __device__ double calculate_et_gpu(
     return -e1_s_i * cos_2phi + e2_s_i * sin_2phi;
 }
 
+// Note: calculate_ct_gpu and calculate_e_psf_t_gpu were removed as they are 
+// identical to calculate_et_gpu. Use calculate_et_gpu for all tangential 
+// shear calculations (e_t, c_t, e_psf_t) by passing the appropriate component values.
+
 // Optional: Device function for R_T calculation
 __device__ double calculate_R_T_gpu(
     double R_11_s_i, double R_12_s_i,

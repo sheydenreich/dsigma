@@ -363,7 +363,7 @@ def precompute(
                         argsort_pix])
 
     for key in ['w', 'e_1', 'e_2', 'm', 'e_rms', 'R_2', 'R_11', 'R_22',
-                'R_12', 'R_21']:
+                'R_12', 'R_21', 'c_1', 'c_2', 'e_psf_1', 'e_psf_2', 'magA']:
         if key in table_s.colnames:
             table_engine_s[key] = np.ascontiguousarray(
                 table_s[key][argsort_pix_s], dtype=np.float64)
@@ -472,6 +472,17 @@ def precompute(
             ('R_21' in table_s.colnames) and ('R_22' in table_s.colnames)):
         key_list.append('sum w_ls R_T')
 
+    if (('c_1' in table_s.colnames) and ('c_2' in table_s.colnames)):
+        key_list.append('sum w_ls c')
+        key_list.append('sum w_ls sigma_crit c')
+
+    if (('e_psf_1' in table_s.colnames) and ('e_psf_2' in table_s.colnames)):
+        key_list.append('sum w_ls e_psf')
+        key_list.append('sum w_ls sigma_crit e_psf')
+
+    if 'magA' in table_s.colnames:
+        key_list.append('sum w_ls p(A=25.5)')
+
     for key in key_list:
         table_engine_r[key] = np.ascontiguousarray(
             np.zeros(n_results, dtype=(
@@ -555,6 +566,15 @@ def precompute(
             R_21_s_np = table_engine_s.get('R_21')
             R_22_s_np = table_engine_s.get('R_22')
 
+            has_c_s = ('c_1' in table_engine_s and 'c_2' in table_engine_s)
+            c_1_s_np = table_engine_s.get('c_1')
+            c_2_s_np = table_engine_s.get('c_2')
+            has_e_psf_s = ('e_psf_1' in table_engine_s and 'e_psf_2' in table_engine_s)
+            e_psf_1_s_np = table_engine_s.get('e_psf_1')
+            e_psf_2_s_np = table_engine_s.get('e_psf_2')
+            has_magA_s = 'magA' in table_engine_s
+            magA_s_np = table_engine_s.get('magA')
+
             # Output arrays
             sum_1_r_np = table_engine_r['sum 1']
             sum_w_ls_r_np = table_engine_r['sum w_ls']
@@ -567,6 +587,11 @@ def precompute(
             sum_w_ls_1_minus_e_rms_sq_r_np = table_engine_r.get('sum w_ls (1 - e_rms^2)')
             sum_w_ls_A_p_R_2_r_np = table_engine_r.get('sum w_ls A p(R_2=0.3)')
             sum_w_ls_R_T_r_np = table_engine_r.get('sum w_ls R_T')
+            sum_w_ls_c_r_np = table_engine_r.get('sum w_ls c')
+            sum_w_ls_sigma_crit_c_r_np = table_engine_r.get('sum w_ls sigma_crit c')
+            sum_w_ls_e_psf_r_np = table_engine_r.get('sum w_ls e_psf')
+            sum_w_ls_sigma_crit_e_psf_r_np = table_engine_r.get('sum w_ls sigma_crit e_psf')
+            sum_w_ls_p_A_r_np = table_engine_r.get('sum w_ls p(A=25.5)')
 
             # Assuming order_healpix is 'ring' as per HEALPix default in this file
             order_healpix_str = "ring"
@@ -588,6 +613,14 @@ def precompute(
                 R_12_s_np.astype(np.double) if R_12_s_np is not None else None,
                 R_21_s_np.astype(np.double) if R_21_s_np is not None else None,
                 R_22_s_np.astype(np.double) if R_22_s_np is not None else None,
+                has_c_s,
+                c_1_s_np.astype(np.double) if c_1_s_np is not None else None,
+                c_2_s_np.astype(np.double) if c_2_s_np is not None else None,
+                has_e_psf_s,
+                e_psf_1_s_np.astype(np.double) if e_psf_1_s_np is not None else None,
+                e_psf_2_s_np.astype(np.double) if e_psf_2_s_np is not None else None,
+                has_magA_s,
+                magA_s_np.astype(np.double) if magA_s_np is not None else None,
                 dist_3d_sq_bins, len(bins) - 1, # dist_3d_sq_bins_np, n_bins
                 comoving, float(weighting), # comoving, weighting
                 sum_1_r_np, sum_w_ls_r_np, sum_w_ls_e_t_r_np,
@@ -595,6 +628,9 @@ def precompute(
                 sum_w_ls_z_s_r_np,
                 sum_w_ls_m_r_np, sum_w_ls_1_minus_e_rms_sq_r_np,
                 sum_w_ls_A_p_R_2_r_np, sum_w_ls_R_T_r_np,
+                sum_w_ls_c_r_np, sum_w_ls_sigma_crit_c_r_np,
+                sum_w_ls_e_psf_r_np, sum_w_ls_sigma_crit_e_psf_r_np,
+                sum_w_ls_p_A_r_np,
                 n_gpus=n_jobs,
                 force_shared=force_shared,
                 force_global=force_global,

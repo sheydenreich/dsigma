@@ -54,6 +54,17 @@ struct TableData {
     double* R_21_s;          // R_21 component of response matrix
     double* R_22_s;          // R_22 component of response matrix
 
+    bool has_c_s;
+    double* c_1_s;           // Additive shear correction c_1
+    double* c_2_s;           // Additive shear correction c_2
+
+    bool has_e_psf_s;
+    double* e_psf_1_s;       // PSF ellipticity component 1
+    double* e_psf_2_s;       // PSF ellipticity component 2
+
+    bool has_magA_s;
+    double* magA_s;          // Magnitude for selection
+
     // Binning configuration
     double* dist_3d_sq_bins; // Radial bins for each lens, flattened: n_lenses * (n_bins + 1)
     int n_bins;              // Number of radial bins
@@ -76,6 +87,11 @@ struct TableData {
     double* sum_w_ls_1_minus_e_rms_sq_r;  // if has_e_rms_s
     double* sum_w_ls_A_p_R_2_r;           // if has_R_2_s
     double* sum_w_ls_R_T_r;               // if has_R_matrix_s
+    double* sum_w_ls_c_r;                 // if has_c_s
+    double* sum_w_ls_sigma_crit_c_r;      // if has_c_s
+    double* sum_w_ls_e_psf_r;             // if has_e_psf_s
+    double* sum_w_ls_sigma_crit_e_psf_r;  // if has_e_psf_s
+    double* sum_w_ls_p_A_r;               // if has_magA_s
 
     // Counts
     int n_lenses;
@@ -92,11 +108,15 @@ struct TableData {
         has_e_rms_s(false), e_rms_s(nullptr),
         has_R_2_s(false), R_2_s(nullptr),
         has_R_matrix_s(false), R_11_s(nullptr), R_12_s(nullptr), R_21_s(nullptr), R_22_s(nullptr),
+        has_c_s(false), c_1_s(nullptr), c_2_s(nullptr),
+        has_e_psf_s(false), e_psf_1_s(nullptr), e_psf_2_s(nullptr),
+        has_magA_s(false), magA_s(nullptr),
         dist_3d_sq_bins(nullptr), n_bins(0),
         comoving(false), weighting(0.0f),
         sum_1_r(nullptr), sum_w_ls_r(nullptr), sum_w_ls_e_t_r(nullptr), sum_w_ls_e_t_sigma_crit_r(nullptr),
         sum_w_ls_z_s_r(nullptr), sum_w_ls_sigma_crit_r(nullptr),
         sum_w_ls_m_r(nullptr), sum_w_ls_1_minus_e_rms_sq_r(nullptr), sum_w_ls_A_p_R_2_r(nullptr), sum_w_ls_R_T_r(nullptr),
+        sum_w_ls_c_r(nullptr), sum_w_ls_sigma_crit_c_r(nullptr), sum_w_ls_e_psf_r(nullptr), sum_w_ls_sigma_crit_e_psf_r(nullptr), sum_w_ls_p_A_r(nullptr),
         n_lenses(0), n_sources(0)
     {}
 };

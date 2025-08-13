@@ -55,6 +55,16 @@ def precompute_gpu_wrapper(
     np.ndarray[np.double_t, ndim=1, mode="c"] R_21_s_np,
     np.ndarray[np.double_t, ndim=1, mode="c"] R_22_s_np,
 
+    # New optional source properties for missing features
+    bint has_c_s,
+    np.ndarray[np.double_t, ndim=1, mode="c"] c_1_s_np,
+    np.ndarray[np.double_t, ndim=1, mode="c"] c_2_s_np,
+    bint has_e_psf_s,
+    np.ndarray[np.double_t, ndim=1, mode="c"] e_psf_1_s_np,
+    np.ndarray[np.double_t, ndim=1, mode="c"] e_psf_2_s_np,
+    bint has_magA_s,
+    np.ndarray[np.double_t, ndim=1, mode="c"] magA_s_np,
+
     # Binning information
     np.ndarray[np.double_t, ndim=1, mode="c"] dist_3d_sq_bins_np,
     int n_bins,
@@ -75,6 +85,12 @@ def precompute_gpu_wrapper(
     np.ndarray[np.double_t, ndim=1, mode="c"] sum_w_ls_1_minus_e_rms_sq_r_np,
     np.ndarray[np.double_t, ndim=1, mode="c"] sum_w_ls_A_p_R_2_r_np,
     np.ndarray[np.double_t, ndim=1, mode="c"] sum_w_ls_R_T_r_np,
+    # New optional output arrays for missing features
+    np.ndarray[np.double_t, ndim=1, mode="c"] sum_w_ls_c_r_np,
+    np.ndarray[np.double_t, ndim=1, mode="c"] sum_w_ls_sigma_crit_c_r_np,
+    np.ndarray[np.double_t, ndim=1, mode="c"] sum_w_ls_e_psf_r_np,
+    np.ndarray[np.double_t, ndim=1, mode="c"] sum_w_ls_sigma_crit_e_psf_r_np,
+    np.ndarray[np.double_t, ndim=1, mode="c"] sum_w_ls_p_A_r_np,
 
     int n_gpus,
     force_shared=False,
@@ -138,6 +154,18 @@ def precompute_gpu_wrapper(
     c_table_data.R_21_s = <double*>R_21_s_np.data if R_21_s_np is not None and has_R_matrix_s else NULL
     c_table_data.R_22_s = <double*>R_22_s_np.data if R_22_s_np is not None and has_R_matrix_s else NULL
 
+    # New optional source properties
+    c_table_data.has_c_s = has_c_s
+    c_table_data.c_1_s = <double*>c_1_s_np.data if c_1_s_np is not None and has_c_s else NULL
+    c_table_data.c_2_s = <double*>c_2_s_np.data if c_2_s_np is not None and has_c_s else NULL
+
+    c_table_data.has_e_psf_s = has_e_psf_s
+    c_table_data.e_psf_1_s = <double*>e_psf_1_s_np.data if e_psf_1_s_np is not None and has_e_psf_s else NULL
+    c_table_data.e_psf_2_s = <double*>e_psf_2_s_np.data if e_psf_2_s_np is not None and has_e_psf_s else NULL
+
+    c_table_data.has_magA_s = has_magA_s
+    c_table_data.magA_s = <double*>magA_s_np.data if magA_s_np is not None and has_magA_s else NULL
+
     # Binning information
     c_table_data.dist_3d_sq_bins = <double*>dist_3d_sq_bins_np.data
     c_table_data.n_bins = n_bins
@@ -158,6 +186,13 @@ def precompute_gpu_wrapper(
     c_table_data.sum_w_ls_1_minus_e_rms_sq_r = <double*>sum_w_ls_1_minus_e_rms_sq_r_np.data if sum_w_ls_1_minus_e_rms_sq_r_np is not None and has_e_rms_s else NULL
     c_table_data.sum_w_ls_A_p_R_2_r = <double*>sum_w_ls_A_p_R_2_r_np.data if sum_w_ls_A_p_R_2_r_np is not None and has_R_2_s else NULL
     c_table_data.sum_w_ls_R_T_r = <double*>sum_w_ls_R_T_r_np.data if sum_w_ls_R_T_r_np is not None and has_R_matrix_s else NULL
+
+    # New optional output arrays
+    c_table_data.sum_w_ls_c_r = <double*>sum_w_ls_c_r_np.data if sum_w_ls_c_r_np is not None and has_c_s else NULL
+    c_table_data.sum_w_ls_sigma_crit_c_r = <double*>sum_w_ls_sigma_crit_c_r_np.data if sum_w_ls_sigma_crit_c_r_np is not None and has_c_s else NULL
+    c_table_data.sum_w_ls_e_psf_r = <double*>sum_w_ls_e_psf_r_np.data if sum_w_ls_e_psf_r_np is not None and has_e_psf_s else NULL
+    c_table_data.sum_w_ls_sigma_crit_e_psf_r = <double*>sum_w_ls_sigma_crit_e_psf_r_np.data if sum_w_ls_sigma_crit_e_psf_r_np is not None and has_e_psf_s else NULL
+    c_table_data.sum_w_ls_p_A_r = <double*>sum_w_ls_p_A_r_np.data if sum_w_ls_p_A_r_np is not None and has_magA_s else NULL
 
     # Call the C++ function with the specified memory flags
     status = _precompute_cuda.precompute_cuda_interface(&c_table_data, n_gpus, force_shared, force_global, verbose)

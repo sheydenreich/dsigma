@@ -226,12 +226,16 @@ typedef struct {
     bool has_e_rms_s; const double* g_e_rms_s; bool has_R_2_s; const double* g_R_2_s;
     bool has_R_matrix_s; const double* g_R_11_s; const double* g_R_12_s;
     const double* g_R_21_s; const double* g_R_22_s;
+    bool has_c_s; const double* g_c_1_s; const double* g_c_2_s;
+    bool has_e_psf_s; const double* g_e_psf_1_s; const double* g_e_psf_2_s;
+    bool has_magA_s; const double* g_magA_s;
     bool comoving; int weighting;
     long long* g_sum_1_r_batch; double* g_sum_w_ls_r_batch;
     double* g_sum_w_ls_e_t_r_batch; double* g_sum_w_ls_e_t_sigma_crit_r_batch;
     double* g_sum_w_ls_z_s_r_batch; double* g_sum_w_ls_sigma_crit_r_batch; double* g_sum_w_ls_m_r_batch;
     double* g_sum_w_ls_1_minus_e_rms_sq_r_batch; double* g_sum_w_ls_A_p_R_2_r_batch;
-    double* g_sum_w_ls_R_T_r_batch;
+    double* g_sum_w_ls_R_T_r_batch; double* g_sum_w_ls_c_r_batch; double* g_sum_w_ls_sigma_crit_c_r_batch;
+    double* g_sum_w_ls_e_psf_r_batch; double* g_sum_w_ls_sigma_crit_e_psf_r_batch; double* g_sum_w_ls_p_A_r_batch;
 } KernelCallbackData;
 
 // Shared memory structure for lens data
@@ -306,6 +310,9 @@ __device__ void process_found_source_hp_pixel(int source_kdtree_idx, KernelCallb
         if (cb_data->has_e_rms_s) { double e_rms_s_i = cb_data->g_e_rms_s[original_source_idx]; cb_data->g_sum_w_ls_1_minus_e_rms_sq_r_batch[out_idx] += w_ls * (1.0 - e_rms_s_i * e_rms_s_i); }
         if (cb_data->has_R_2_s && cb_data->g_R_2_s[original_source_idx] <= 0.31) cb_data->g_sum_w_ls_A_p_R_2_r_batch[out_idx] += 0.00865 * w_ls / 0.01;
         if (cb_data->has_R_matrix_s) { double R_T_val = calculate_R_T_gpu(cb_data->g_R_11_s[original_source_idx], cb_data->g_R_12_s[original_source_idx], cb_data->g_R_21_s[original_source_idx], cb_data->g_R_22_s[original_source_idx], cos_2phi, sin_2phi); cb_data->g_sum_w_ls_R_T_r_batch[out_idx] += w_ls * R_T_val; }
+        if (cb_data->has_c_s) { double c_t_val = calculate_et_gpu(cb_data->g_c_1_s[original_source_idx], cb_data->g_c_2_s[original_source_idx], cos_2phi, sin_2phi); cb_data->g_sum_w_ls_c_r_batch[out_idx] += w_ls * c_t_val; cb_data->g_sum_w_ls_sigma_crit_c_r_batch[out_idx] += w_ls * sigma_crit * c_t_val; }
+        if (cb_data->has_e_psf_s) { double e_psf_t_val = calculate_et_gpu(cb_data->g_e_psf_1_s[original_source_idx], cb_data->g_e_psf_2_s[original_source_idx], cos_2phi, sin_2phi); cb_data->g_sum_w_ls_e_psf_r_batch[out_idx] += w_ls * e_psf_t_val; cb_data->g_sum_w_ls_sigma_crit_e_psf_r_batch[out_idx] += w_ls * sigma_crit * e_psf_t_val; }
+        if (cb_data->has_magA_s && cb_data->g_magA_s[original_source_idx] >= 25.475) cb_data->g_sum_w_ls_p_A_r_batch[out_idx] += w_ls / 0.025;
     }
 }
 
@@ -346,12 +353,17 @@ void process_lens_batch_kernel(
     bool _has_sigma_crit_eff, int _n_z_bins_l, const double* g_sigma_crit_eff_l, const int* _g_z_bin_s,
     bool _has_m_s, const double* g_m_s, bool _has_e_rms_s, const double* g_e_rms_s, bool _has_R_2_s, const double* g_R_2_s,
     bool _has_R_matrix_s, const double* g_R_11_s, const double* g_R_12_s, const double* g_R_21_s, const double* g_R_22_s,
+    bool _has_c_s, const double* g_c_1_s, const double* g_c_2_s,
+    bool _has_e_psf_s, const double* g_e_psf_1_s, const double* g_e_psf_2_s,
+    bool _has_magA_s, const double* g_magA_s,
     int N_lenses_in_batch, int N_bins, long nside_healpix, bool comoving, int weighting, int global_lens_offset,
     void* g_knn_workspace, int max_k_per_thread,
     int gpu_id,
     long long* g_sum_1_r_batch, double* g_sum_w_ls_r_batch, double* g_sum_w_ls_e_t_r_batch, double* g_sum_w_ls_e_t_sigma_crit_r_batch,
     double* g_sum_w_ls_z_s_r_batch, double* g_sum_w_ls_sigma_crit_r_batch, double* g_sum_w_ls_m_r_batch,
-    double* g_sum_w_ls_1_minus_e_rms_sq_r_batch, double* g_sum_w_ls_A_p_R_2_r_batch, double* g_sum_w_ls_R_T_r_batch
+    double* g_sum_w_ls_1_minus_e_rms_sq_r_batch, double* g_sum_w_ls_A_p_R_2_r_batch, double* g_sum_w_ls_R_T_r_batch,
+    double* g_sum_w_ls_c_r_batch, double* g_sum_w_ls_sigma_crit_c_r_batch,
+    double* g_sum_w_ls_e_psf_r_batch, double* g_sum_w_ls_sigma_crit_e_psf_r_batch, double* g_sum_w_ls_p_A_r_batch
 ) {
     int lens_idx_batch = blockIdx.x * blockDim.x + threadIdx.x;
     if (lens_idx_batch >= N_lenses_in_batch) return;
@@ -387,12 +399,18 @@ void process_lens_batch_kernel(
     callback_data.has_e_rms_s = _has_e_rms_s; callback_data.g_e_rms_s = g_e_rms_s; callback_data.has_R_2_s = _has_R_2_s; callback_data.g_R_2_s = g_R_2_s;
     callback_data.has_R_matrix_s = _has_R_matrix_s; callback_data.g_R_11_s = g_R_11_s; callback_data.g_R_12_s = g_R_12_s;
     callback_data.g_R_21_s = g_R_21_s; callback_data.g_R_22_s = g_R_22_s;
+    callback_data.has_c_s = _has_c_s; callback_data.g_c_1_s = g_c_1_s; callback_data.g_c_2_s = g_c_2_s;
+    callback_data.has_e_psf_s = _has_e_psf_s; callback_data.g_e_psf_1_s = g_e_psf_1_s; callback_data.g_e_psf_2_s = g_e_psf_2_s;
+    callback_data.has_magA_s = _has_magA_s; callback_data.g_magA_s = g_magA_s;
     callback_data.comoving = comoving; callback_data.weighting = weighting; 
     callback_data.g_sum_1_r_batch = g_sum_1_r_batch; callback_data.g_sum_w_ls_r_batch = g_sum_w_ls_r_batch;
     callback_data.g_sum_w_ls_e_t_r_batch = g_sum_w_ls_e_t_r_batch; callback_data.g_sum_w_ls_e_t_sigma_crit_r_batch = g_sum_w_ls_e_t_sigma_crit_r_batch;
     callback_data.g_sum_w_ls_z_s_r_batch = g_sum_w_ls_z_s_r_batch; callback_data.g_sum_w_ls_sigma_crit_r_batch = g_sum_w_ls_sigma_crit_r_batch; callback_data.g_sum_w_ls_m_r_batch = g_sum_w_ls_m_r_batch;
     callback_data.g_sum_w_ls_1_minus_e_rms_sq_r_batch = g_sum_w_ls_1_minus_e_rms_sq_r_batch; callback_data.g_sum_w_ls_A_p_R_2_r_batch = g_sum_w_ls_A_p_R_2_r_batch;
     callback_data.g_sum_w_ls_R_T_r_batch = g_sum_w_ls_R_T_r_batch;
+    callback_data.g_sum_w_ls_c_r_batch = g_sum_w_ls_c_r_batch; callback_data.g_sum_w_ls_sigma_crit_c_r_batch = g_sum_w_ls_sigma_crit_c_r_batch;
+    callback_data.g_sum_w_ls_e_psf_r_batch = g_sum_w_ls_e_psf_r_batch; callback_data.g_sum_w_ls_sigma_crit_e_psf_r_batch = g_sum_w_ls_sigma_crit_e_psf_r_batch;
+    callback_data.g_sum_w_ls_p_A_r_batch = g_sum_w_ls_p_A_r_batch;
 
     kdtree_radius_search_and_process(
         lens_xyz_cartesian, search_radius_sq,
@@ -507,6 +525,19 @@ __device__ void process_found_source_hp_pixel_shared(
                 cb_data->g_R_21_s[original_source_idx], cb_data->g_R_22_s[original_source_idx], cos_2phi, sin_2phi); 
             atomicAdd(&cb_data->g_sum_w_ls_R_T_r_batch[out_idx], w_ls * R_T_val); 
         }
+        if (cb_data->has_c_s) { 
+            double c_t_val = calculate_et_gpu(cb_data->g_c_1_s[original_source_idx], cb_data->g_c_2_s[original_source_idx], cos_2phi, sin_2phi); 
+            atomicAdd(&cb_data->g_sum_w_ls_c_r_batch[out_idx], w_ls * c_t_val); 
+            atomicAdd(&cb_data->g_sum_w_ls_sigma_crit_c_r_batch[out_idx], w_ls * sigma_crit * c_t_val); 
+        }
+        if (cb_data->has_e_psf_s) { 
+            double e_psf_t_val = calculate_et_gpu(cb_data->g_e_psf_1_s[original_source_idx], cb_data->g_e_psf_2_s[original_source_idx], cos_2phi, sin_2phi); 
+            atomicAdd(&cb_data->g_sum_w_ls_e_psf_r_batch[out_idx], w_ls * e_psf_t_val); 
+            atomicAdd(&cb_data->g_sum_w_ls_sigma_crit_e_psf_r_batch[out_idx], w_ls * sigma_crit * e_psf_t_val); 
+        }
+        if (cb_data->has_magA_s && cb_data->g_magA_s[original_source_idx] >= 25.475) {
+            atomicAdd(&cb_data->g_sum_w_ls_p_A_r_batch[out_idx], w_ls / 0.025);
+        }
         
         sources_processed++;
     }
@@ -617,12 +648,17 @@ void process_lens_batch_kernel_optimized(
     bool _has_sigma_crit_eff, int _n_z_bins_l, const double* g_sigma_crit_eff_l, const int* _g_z_bin_s,
     bool _has_m_s, const double* g_m_s, bool _has_e_rms_s, const double* g_e_rms_s, bool _has_R_2_s, const double* g_R_2_s,
     bool _has_R_matrix_s, const double* g_R_11_s, const double* g_R_12_s, const double* g_R_21_s, const double* g_R_22_s,
+    bool _has_c_s, const double* g_c_1_s, const double* g_c_2_s,
+    bool _has_e_psf_s, const double* g_e_psf_1_s, const double* g_e_psf_2_s,
+    bool _has_magA_s, const double* g_magA_s,
     int N_lenses_in_batch, int N_bins, long nside_healpix, bool comoving, int weighting, int global_lens_offset,
     void* g_knn_workspace, int max_k_per_thread,
     int gpu_id,
     long long* g_sum_1_r_batch, double* g_sum_w_ls_r_batch, double* g_sum_w_ls_e_t_r_batch, double* g_sum_w_ls_e_t_sigma_crit_r_batch,
     double* g_sum_w_ls_z_s_r_batch, double* g_sum_w_ls_sigma_crit_r_batch, double* g_sum_w_ls_m_r_batch,
-    double* g_sum_w_ls_1_minus_e_rms_sq_r_batch, double* g_sum_w_ls_A_p_R_2_r_batch, double* g_sum_w_ls_R_T_r_batch
+    double* g_sum_w_ls_1_minus_e_rms_sq_r_batch, double* g_sum_w_ls_A_p_R_2_r_batch, double* g_sum_w_ls_R_T_r_batch,
+    double* g_sum_w_ls_c_r_batch, double* g_sum_w_ls_sigma_crit_c_r_batch,
+    double* g_sum_w_ls_e_psf_r_batch, double* g_sum_w_ls_sigma_crit_e_psf_r_batch, double* g_sum_w_ls_p_A_r_batch
 ) {
     // Now blockIdx.x directly corresponds to lens index
     int lens_idx_batch = blockIdx.x;
@@ -695,6 +731,9 @@ void process_lens_batch_kernel_optimized(
     callback_data.has_e_rms_s = _has_e_rms_s; callback_data.g_e_rms_s = g_e_rms_s; callback_data.has_R_2_s = _has_R_2_s; callback_data.g_R_2_s = g_R_2_s;
     callback_data.has_R_matrix_s = _has_R_matrix_s; callback_data.g_R_11_s = g_R_11_s; callback_data.g_R_12_s = g_R_12_s;
     callback_data.g_R_21_s = g_R_21_s; callback_data.g_R_22_s = g_R_22_s;
+    callback_data.has_c_s = _has_c_s; callback_data.g_c_1_s = g_c_1_s; callback_data.g_c_2_s = g_c_2_s;
+    callback_data.has_e_psf_s = _has_e_psf_s; callback_data.g_e_psf_1_s = g_e_psf_1_s; callback_data.g_e_psf_2_s = g_e_psf_2_s;
+    callback_data.has_magA_s = _has_magA_s; callback_data.g_magA_s = g_magA_s;
     callback_data.comoving = comoving; callback_data.weighting = weighting; 
     // Pass output batch pointers
     callback_data.g_sum_1_r_batch = g_sum_1_r_batch; callback_data.g_sum_w_ls_r_batch = g_sum_w_ls_r_batch;
@@ -702,6 +741,9 @@ void process_lens_batch_kernel_optimized(
     callback_data.g_sum_w_ls_z_s_r_batch = g_sum_w_ls_z_s_r_batch; callback_data.g_sum_w_ls_sigma_crit_r_batch = g_sum_w_ls_sigma_crit_r_batch; callback_data.g_sum_w_ls_m_r_batch = g_sum_w_ls_m_r_batch;
     callback_data.g_sum_w_ls_1_minus_e_rms_sq_r_batch = g_sum_w_ls_1_minus_e_rms_sq_r_batch; callback_data.g_sum_w_ls_A_p_R_2_r_batch = g_sum_w_ls_A_p_R_2_r_batch;
     callback_data.g_sum_w_ls_R_T_r_batch = g_sum_w_ls_R_T_r_batch;
+    callback_data.g_sum_w_ls_c_r_batch = g_sum_w_ls_c_r_batch; callback_data.g_sum_w_ls_sigma_crit_c_r_batch = g_sum_w_ls_sigma_crit_c_r_batch;
+    callback_data.g_sum_w_ls_e_psf_r_batch = g_sum_w_ls_e_psf_r_batch; callback_data.g_sum_w_ls_sigma_crit_e_psf_r_batch = g_sum_w_ls_sigma_crit_e_psf_r_batch;
+    callback_data.g_sum_w_ls_p_A_r_batch = g_sum_w_ls_p_A_r_batch;
 
     // Now all threads in the block work together to process this lens
     kdtree_radius_search_and_process_shared(
@@ -806,6 +848,7 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
         double *d_sigma_crit_eff_l = nullptr; int *d_z_bin_s = nullptr;
         double *d_m_s = nullptr, *d_e_rms_s = nullptr, *d_R_2_s = nullptr;
         double *d_R_11_s = nullptr, *d_R_12_s = nullptr, *d_R_21_s = nullptr, *d_R_22_s = nullptr;
+        double *d_c_1_s = nullptr, *d_c_2_s = nullptr, *d_e_psf_1_s = nullptr, *d_e_psf_2_s = nullptr, *d_magA_s = nullptr;
         float3* d_unique_source_hp_coords_kdtree = nullptr; long* d_unique_source_hp_ids = nullptr;
         cukd::box_t<float3>* d_world_bounds = nullptr; int* d_kdtree_to_original_mapping = nullptr;
         long* d_all_source_hp_ids_sorted_gpu = nullptr; int* d_sorted_source_original_indices_gpu = nullptr;
@@ -816,6 +859,9 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
             CUDA_CHECK(cudaMalloc(&d_d_com_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_d_com_s, tables->d_com_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_sin_ra_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_sin_ra_s, tables->sin_ra_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_cos_ra_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_cos_ra_s, tables->cos_ra_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_sin_dec_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_sin_dec_s, tables->sin_dec_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_cos_dec_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_cos_dec_s, tables->cos_dec_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_w_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_w_s, tables->w_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_e_1_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_e_1_s, tables->e_1_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_e_2_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_e_2_s, tables->e_2_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_z_l_max_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_z_l_max_s, tables->z_l_max_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream));
             if (tables->has_sigma_crit_eff) { CUDA_CHECK(cudaMalloc(&d_sigma_crit_eff_l, (size_t)tables->n_lenses * tables->n_z_bins_l * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_sigma_crit_eff_l, tables->sigma_crit_eff_l, (size_t)tables->n_lenses * tables->n_z_bins_l * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_z_bin_s, tables->n_sources * sizeof(int))); CUDA_CHECK(cudaMemcpyAsync(d_z_bin_s, tables->z_bin_s, tables->n_sources * sizeof(int), cudaMemcpyHostToDevice, stream)); }
             if (tables->has_m_s) { CUDA_CHECK(cudaMalloc(&d_m_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_m_s, tables->m_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); } if (tables->has_e_rms_s) { CUDA_CHECK(cudaMalloc(&d_e_rms_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_e_rms_s, tables->e_rms_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); } if (tables->has_R_2_s) { CUDA_CHECK(cudaMalloc(&d_R_2_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_R_2_s, tables->R_2_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); } if (tables->has_R_matrix_s) { CUDA_CHECK(cudaMalloc(&d_R_11_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_R_11_s, tables->R_11_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_R_12_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_R_12_s, tables->R_12_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_R_21_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_R_21_s, tables->R_21_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_R_22_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_R_22_s, tables->R_22_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); }
+            if (tables->has_c_s) { CUDA_CHECK(cudaMalloc(&d_c_1_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_c_1_s, tables->c_1_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_c_2_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_c_2_s, tables->c_2_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); }
+            if (tables->has_e_psf_s) { CUDA_CHECK(cudaMalloc(&d_e_psf_1_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_e_psf_1_s, tables->e_psf_1_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_e_psf_2_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_e_psf_2_s, tables->e_psf_2_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); }
+            if (tables->has_magA_s) { CUDA_CHECK(cudaMalloc(&d_magA_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_magA_s, tables->magA_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); }
             CUDA_CHECK(cudaMalloc(&d_unique_source_hp_coords_kdtree, N_unique_source_hp * sizeof(float3))); CUDA_CHECK(cudaMemcpyAsync(d_unique_source_hp_coords_kdtree, h_unique_source_hp_coords_kdtree.data(), N_unique_source_hp * sizeof(float3), cudaMemcpyHostToDevice, stream));
             CUDA_CHECK(cudaMalloc(&d_unique_source_hp_ids, N_unique_source_hp * sizeof(long))); CUDA_CHECK(cudaMemcpyAsync(d_unique_source_hp_ids, h_unique_source_hp_ids.data(), N_unique_source_hp * sizeof(long), cudaMemcpyHostToDevice, stream));
             CUDA_CHECK(cudaMalloc(&d_kdtree_to_original_mapping, N_unique_source_hp * sizeof(int))); CUDA_CHECK(cudaMemcpyAsync(d_kdtree_to_original_mapping, h_kdtree_to_original_mapping.data(), N_unique_source_hp * sizeof(int), cudaMemcpyHostToDevice, stream));
@@ -867,7 +913,7 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
                 
                 double *d_z_l_batch, *d_d_com_l_batch, *d_sin_ra_l_batch, *d_cos_ra_l_batch, *d_sin_dec_l_batch, *d_cos_dec_l_batch, *d_dist_3d_sq_bins_batch;
                 void* d_knn_workspace_batch;
-                long long* d_sum_1_r_batch; double* d_sum_w_ls_r_batch, *d_sum_w_ls_e_t_r_batch, *d_sum_w_ls_e_t_sigma_crit_r_batch, *d_sum_w_ls_z_s_r_batch, *d_sum_w_ls_sigma_crit_r_batch, *d_sum_w_ls_m_r_batch, *d_sum_w_ls_1_minus_e_rms_sq_r_batch, *d_sum_w_ls_A_p_R_2_r_batch, *d_sum_w_ls_R_T_r_batch;
+                long long* d_sum_1_r_batch; double* d_sum_w_ls_r_batch, *d_sum_w_ls_e_t_r_batch, *d_sum_w_ls_e_t_sigma_crit_r_batch, *d_sum_w_ls_z_s_r_batch, *d_sum_w_ls_sigma_crit_r_batch, *d_sum_w_ls_m_r_batch, *d_sum_w_ls_1_minus_e_rms_sq_r_batch, *d_sum_w_ls_A_p_R_2_r_batch, *d_sum_w_ls_R_T_r_batch, *d_sum_w_ls_c_r_batch, *d_sum_w_ls_sigma_crit_c_r_batch, *d_sum_w_ls_e_psf_r_batch, *d_sum_w_ls_sigma_crit_e_psf_r_batch, *d_sum_w_ls_p_A_r_batch;
                 CUDA_CHECK(cudaMalloc(&d_z_l_batch, current_batch_size * sizeof(double))); CUDA_CHECK(cudaMalloc(&d_d_com_l_batch, current_batch_size * sizeof(double))); CUDA_CHECK(cudaMalloc(&d_sin_ra_l_batch, current_batch_size * sizeof(double))); CUDA_CHECK(cudaMalloc(&d_cos_ra_l_batch, current_batch_size * sizeof(double))); CUDA_CHECK(cudaMalloc(&d_sin_dec_l_batch, current_batch_size * sizeof(double))); CUDA_CHECK(cudaMalloc(&d_cos_dec_l_batch, current_batch_size * sizeof(double))); CUDA_CHECK(cudaMalloc(&d_dist_3d_sq_bins_batch, (size_t)current_batch_size * (tables->n_bins + 1) * sizeof(double)));
                 CUDA_CHECK(cudaMalloc(&d_knn_workspace_batch, (size_t)current_batch_size * max_k_for_this_gpu * sizeof(KnnCandidate)));
                 size_t batch_output_bins = (size_t)current_batch_size * tables->n_bins;
@@ -877,6 +923,9 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
                 if (tables->has_e_rms_s) { CUDA_CHECK(cudaMalloc(&d_sum_w_ls_1_minus_e_rms_sq_r_batch, batch_output_bins * sizeof(double))); CUDA_CHECK(cudaMemsetAsync(d_sum_w_ls_1_minus_e_rms_sq_r_batch, 0, batch_output_bins * sizeof(double), stream)); } else { d_sum_w_ls_1_minus_e_rms_sq_r_batch = nullptr; }
                 if (tables->has_R_2_s) { CUDA_CHECK(cudaMalloc(&d_sum_w_ls_A_p_R_2_r_batch, batch_output_bins * sizeof(double))); CUDA_CHECK(cudaMemsetAsync(d_sum_w_ls_A_p_R_2_r_batch, 0, batch_output_bins * sizeof(double), stream)); } else { d_sum_w_ls_A_p_R_2_r_batch = nullptr; }
                 if (tables->has_R_matrix_s) { CUDA_CHECK(cudaMalloc(&d_sum_w_ls_R_T_r_batch, batch_output_bins * sizeof(double))); CUDA_CHECK(cudaMemsetAsync(d_sum_w_ls_R_T_r_batch, 0, batch_output_bins * sizeof(double), stream)); } else { d_sum_w_ls_R_T_r_batch = nullptr; }
+                if (tables->has_c_s) { CUDA_CHECK(cudaMalloc(&d_sum_w_ls_c_r_batch, batch_output_bins * sizeof(double))); CUDA_CHECK(cudaMemsetAsync(d_sum_w_ls_c_r_batch, 0, batch_output_bins * sizeof(double), stream)); CUDA_CHECK(cudaMalloc(&d_sum_w_ls_sigma_crit_c_r_batch, batch_output_bins * sizeof(double))); CUDA_CHECK(cudaMemsetAsync(d_sum_w_ls_sigma_crit_c_r_batch, 0, batch_output_bins * sizeof(double), stream)); } else { d_sum_w_ls_c_r_batch = nullptr; d_sum_w_ls_sigma_crit_c_r_batch = nullptr; }
+                if (tables->has_e_psf_s) { CUDA_CHECK(cudaMalloc(&d_sum_w_ls_e_psf_r_batch, batch_output_bins * sizeof(double))); CUDA_CHECK(cudaMemsetAsync(d_sum_w_ls_e_psf_r_batch, 0, batch_output_bins * sizeof(double), stream)); CUDA_CHECK(cudaMalloc(&d_sum_w_ls_sigma_crit_e_psf_r_batch, batch_output_bins * sizeof(double))); CUDA_CHECK(cudaMemsetAsync(d_sum_w_ls_sigma_crit_e_psf_r_batch, 0, batch_output_bins * sizeof(double), stream)); } else { d_sum_w_ls_e_psf_r_batch = nullptr; d_sum_w_ls_sigma_crit_e_psf_r_batch = nullptr; }
+                if (tables->has_magA_s) { CUDA_CHECK(cudaMalloc(&d_sum_w_ls_p_A_r_batch, batch_output_bins * sizeof(double))); CUDA_CHECK(cudaMemsetAsync(d_sum_w_ls_p_A_r_batch, 0, batch_output_bins * sizeof(double), stream)); } else { d_sum_w_ls_p_A_r_batch = nullptr; }
                 
                 CUDA_CHECK(cudaMemcpyAsync(d_z_l_batch, tables->z_l + global_lens_offset, current_batch_size * sizeof(double), cudaMemcpyHostToDevice, stream));
                 CUDA_CHECK(cudaMemcpyAsync(d_d_com_l_batch, tables->d_com_l + global_lens_offset, current_batch_size * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMemcpyAsync(d_sin_ra_l_batch, tables->sin_ra_l + global_lens_offset, current_batch_size * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMemcpyAsync(d_cos_ra_l_batch, tables->cos_ra_l + global_lens_offset, current_batch_size * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMemcpyAsync(d_sin_dec_l_batch, tables->sin_dec_l + global_lens_offset, current_batch_size * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMemcpyAsync(d_cos_dec_l_batch, tables->cos_dec_l + global_lens_offset, current_batch_size * sizeof(double), cudaMemcpyHostToDevice, stream));
@@ -943,11 +992,16 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
                         tables->has_sigma_crit_eff, tables->n_z_bins_l, d_sigma_crit_eff_l, d_z_bin_s,
                         tables->has_m_s, d_m_s, tables->has_e_rms_s, d_e_rms_s, tables->has_R_2_s, d_R_2_s,
                         tables->has_R_matrix_s, d_R_11_s, d_R_12_s, d_R_21_s, d_R_22_s,
+                        tables->has_c_s, d_c_1_s, d_c_2_s,
+                        tables->has_e_psf_s, d_e_psf_1_s, d_e_psf_2_s,
+                        tables->has_magA_s, d_magA_s,
                         current_batch_size, tables->n_bins, tables->nside_healpix, tables->comoving, tables->weighting, global_lens_offset,
                         d_knn_workspace_batch, max_k_for_this_gpu, gpu_id,
                         d_sum_1_r_batch, d_sum_w_ls_r_batch, d_sum_w_ls_e_t_r_batch, d_sum_w_ls_e_t_sigma_crit_r_batch,
                         d_sum_w_ls_z_s_r_batch, d_sum_w_ls_sigma_crit_r_batch, d_sum_w_ls_m_r_batch,
-                        d_sum_w_ls_1_minus_e_rms_sq_r_batch, d_sum_w_ls_A_p_R_2_r_batch, d_sum_w_ls_R_T_r_batch
+                        d_sum_w_ls_1_minus_e_rms_sq_r_batch, d_sum_w_ls_A_p_R_2_r_batch, d_sum_w_ls_R_T_r_batch,
+                        d_sum_w_ls_c_r_batch, d_sum_w_ls_sigma_crit_c_r_batch,
+                        d_sum_w_ls_e_psf_r_batch, d_sum_w_ls_sigma_crit_e_psf_r_batch, d_sum_w_ls_p_A_r_batch
                     );
                 } else if (use_shared_memory) {
                     process_lens_batch_kernel_optimized<<<blocksPerGrid, threadsPerBlock, required_shared_mem, stream>>>(
@@ -960,11 +1014,16 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
                         tables->has_sigma_crit_eff, tables->n_z_bins_l, d_sigma_crit_eff_l, d_z_bin_s,
                         tables->has_m_s, d_m_s, tables->has_e_rms_s, d_e_rms_s, tables->has_R_2_s, d_R_2_s,
                         tables->has_R_matrix_s, d_R_11_s, d_R_12_s, d_R_21_s, d_R_22_s,
+                        tables->has_c_s, d_c_1_s, d_c_2_s,
+                        tables->has_e_psf_s, d_e_psf_1_s, d_e_psf_2_s,
+                        tables->has_magA_s, d_magA_s,
                         current_batch_size, tables->n_bins, tables->nside_healpix, tables->comoving, tables->weighting, global_lens_offset,
                         d_knn_workspace_batch, max_k_for_this_gpu, gpu_id,
                         d_sum_1_r_batch, d_sum_w_ls_r_batch, d_sum_w_ls_e_t_r_batch, d_sum_w_ls_e_t_sigma_crit_r_batch,
                         d_sum_w_ls_z_s_r_batch, d_sum_w_ls_sigma_crit_r_batch, d_sum_w_ls_m_r_batch,
-                        d_sum_w_ls_1_minus_e_rms_sq_r_batch, d_sum_w_ls_A_p_R_2_r_batch, d_sum_w_ls_R_T_r_batch
+                        d_sum_w_ls_1_minus_e_rms_sq_r_batch, d_sum_w_ls_A_p_R_2_r_batch, d_sum_w_ls_R_T_r_batch,
+                        d_sum_w_ls_c_r_batch, d_sum_w_ls_sigma_crit_c_r_batch,
+                        d_sum_w_ls_e_psf_r_batch, d_sum_w_ls_sigma_crit_e_psf_r_batch, d_sum_w_ls_p_A_r_batch
                     );
                 }
                                 
@@ -975,12 +1034,16 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
                 if (tables->has_e_rms_s) CUDA_CHECK(cudaMemcpyAsync(tables->sum_w_ls_1_minus_e_rms_sq_r + host_offset, d_sum_w_ls_1_minus_e_rms_sq_r_batch, batch_output_bins * sizeof(double), cudaMemcpyDeviceToHost, stream));
                 if (tables->has_R_2_s) CUDA_CHECK(cudaMemcpyAsync(tables->sum_w_ls_A_p_R_2_r + host_offset, d_sum_w_ls_A_p_R_2_r_batch, batch_output_bins * sizeof(double), cudaMemcpyDeviceToHost, stream));
                 if (tables->has_R_matrix_s) CUDA_CHECK(cudaMemcpyAsync(tables->sum_w_ls_R_T_r + host_offset, d_sum_w_ls_R_T_r_batch, batch_output_bins * sizeof(double), cudaMemcpyDeviceToHost, stream));
+                if (tables->has_c_s) { CUDA_CHECK(cudaMemcpyAsync(tables->sum_w_ls_c_r + host_offset, d_sum_w_ls_c_r_batch, batch_output_bins * sizeof(double), cudaMemcpyDeviceToHost, stream)); CUDA_CHECK(cudaMemcpyAsync(tables->sum_w_ls_sigma_crit_c_r + host_offset, d_sum_w_ls_sigma_crit_c_r_batch, batch_output_bins * sizeof(double), cudaMemcpyDeviceToHost, stream)); }
+                if (tables->has_e_psf_s) { CUDA_CHECK(cudaMemcpyAsync(tables->sum_w_ls_e_psf_r + host_offset, d_sum_w_ls_e_psf_r_batch, batch_output_bins * sizeof(double), cudaMemcpyDeviceToHost, stream)); CUDA_CHECK(cudaMemcpyAsync(tables->sum_w_ls_sigma_crit_e_psf_r + host_offset, d_sum_w_ls_sigma_crit_e_psf_r_batch, batch_output_bins * sizeof(double), cudaMemcpyDeviceToHost, stream)); }
+                if (tables->has_magA_s) CUDA_CHECK(cudaMemcpyAsync(tables->sum_w_ls_p_A_r + host_offset, d_sum_w_ls_p_A_r_batch, batch_output_bins * sizeof(double), cudaMemcpyDeviceToHost, stream));
                 
                 CUDA_CHECK(cudaStreamSynchronize(stream));
                 
                 CUDA_CHECK(cudaFree(d_z_l_batch)); CUDA_CHECK(cudaFree(d_d_com_l_batch)); CUDA_CHECK(cudaFree(d_sin_ra_l_batch)); CUDA_CHECK(cudaFree(d_cos_ra_l_batch)); CUDA_CHECK(cudaFree(d_sin_dec_l_batch)); CUDA_CHECK(cudaFree(d_cos_dec_l_batch)); CUDA_CHECK(cudaFree(d_dist_3d_sq_bins_batch)); CUDA_CHECK(cudaFree(d_knn_workspace_batch));
                 CUDA_CHECK(cudaFree(d_sum_1_r_batch)); CUDA_CHECK(cudaFree(d_sum_w_ls_r_batch)); CUDA_CHECK(cudaFree(d_sum_w_ls_e_t_r_batch)); CUDA_CHECK(cudaFree(d_sum_w_ls_e_t_sigma_crit_r_batch)); CUDA_CHECK(cudaFree(d_sum_w_ls_z_s_r_batch)); CUDA_CHECK(cudaFree(d_sum_w_ls_sigma_crit_r_batch));
                 if (tables->has_m_s) CUDA_CHECK(cudaFree(d_sum_w_ls_m_r_batch)); if (tables->has_e_rms_s) CUDA_CHECK(cudaFree(d_sum_w_ls_1_minus_e_rms_sq_r_batch)); if (tables->has_R_2_s) CUDA_CHECK(cudaFree(d_sum_w_ls_A_p_R_2_r_batch)); if (tables->has_R_matrix_s) CUDA_CHECK(cudaFree(d_sum_w_ls_R_T_r_batch));
+                if (tables->has_c_s) { CUDA_CHECK(cudaFree(d_sum_w_ls_c_r_batch)); CUDA_CHECK(cudaFree(d_sum_w_ls_sigma_crit_c_r_batch)); } if (tables->has_e_psf_s) { CUDA_CHECK(cudaFree(d_sum_w_ls_e_psf_r_batch)); CUDA_CHECK(cudaFree(d_sum_w_ls_sigma_crit_e_psf_r_batch)); } if (tables->has_magA_s) CUDA_CHECK(cudaFree(d_sum_w_ls_p_A_r_batch));
                 
                 lenses_processed += current_batch_size;
                 if (verbose) printf("GPU %d: Completed batch. Total lenses processed on this GPU: %d / %d\n", gpu_id, lenses_processed, num_lenses_for_this_gpu);
@@ -993,6 +1056,7 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
             if (d_sigma_crit_eff_l) CUDA_CHECK(cudaFree(d_sigma_crit_eff_l)); if (d_z_bin_s) CUDA_CHECK(cudaFree(d_z_bin_s));
             if (d_m_s) CUDA_CHECK(cudaFree(d_m_s)); if (d_e_rms_s) CUDA_CHECK(cudaFree(d_e_rms_s)); if (d_R_2_s) CUDA_CHECK(cudaFree(d_R_2_s));
             if (d_R_11_s) { CUDA_CHECK(cudaFree(d_R_11_s)); CUDA_CHECK(cudaFree(d_R_12_s)); CUDA_CHECK(cudaFree(d_R_21_s)); CUDA_CHECK(cudaFree(d_R_22_s)); }
+            if (d_c_1_s) { CUDA_CHECK(cudaFree(d_c_1_s)); CUDA_CHECK(cudaFree(d_c_2_s)); } if (d_e_psf_1_s) { CUDA_CHECK(cudaFree(d_e_psf_1_s)); CUDA_CHECK(cudaFree(d_e_psf_2_s)); } if (d_magA_s) CUDA_CHECK(cudaFree(d_magA_s));
             if(d_unique_source_hp_coords_kdtree) CUDA_CHECK(cudaFree(d_unique_source_hp_coords_kdtree)); if(d_unique_source_hp_ids) CUDA_CHECK(cudaFree(d_unique_source_hp_ids));
             if(d_world_bounds) CUDA_CHECK(cudaFree(d_world_bounds)); if(d_kdtree_to_original_mapping) CUDA_CHECK(cudaFree(d_kdtree_to_original_mapping));
             if(d_all_source_hp_ids_sorted_gpu) CUDA_CHECK(cudaFree(d_all_source_hp_ids_sorted_gpu)); if(d_sorted_source_original_indices_gpu) CUDA_CHECK(cudaFree(d_sorted_source_original_indices_gpu));

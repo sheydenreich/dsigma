@@ -50,6 +50,16 @@ cdef extern from "precompute_interface.h": # Assumes precompute_interface.h is i
         double* R_21_s
         double* R_22_s
 
+        # New optional source properties for missing features
+        bint has_c_s
+        double* c_1_s
+        double* c_2_s
+        bint has_e_psf_s
+        double* e_psf_1_s
+        double* e_psf_2_s
+        bint has_magA_s
+        double* magA_s
+
         # Binning information
         double* dist_3d_sq_bins
         int n_bins
@@ -70,6 +80,12 @@ cdef extern from "precompute_interface.h": # Assumes precompute_interface.h is i
         double* sum_w_ls_1_minus_e_rms_sq_r
         double* sum_w_ls_A_p_R_2_r
         double* sum_w_ls_R_T_r
+        # New optional output arrays for missing features
+        double* sum_w_ls_c_r
+        double* sum_w_ls_sigma_crit_c_r
+        double* sum_w_ls_e_psf_r
+        double* sum_w_ls_sigma_crit_e_psf_r
+        double* sum_w_ls_p_A_r
 
     # Structure for max_k check results
     ctypedef struct MaxKCheckResult:
