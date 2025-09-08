@@ -17,11 +17,11 @@ from .physics import critical_surface_density
 from .physics import effective_critical_surface_density
 from .precompute_engine import precompute_engine
 
-try:
-    from ._precompute_cuda import precompute_gpu_wrapper
-    GPU_AVAILABLE = True
-except ImportError:
-    GPU_AVAILABLE = False
+# try:
+from ._precompute_cuda import precompute_gpu_wrapper
+GPU_AVAILABLE = True
+# except ImportError:
+    # GPU_AVAILABLE = False
 
 
 __all__ = ["photo_z_dilution_factor", "mean_photo_z_offset", "precompute"]
@@ -588,7 +588,7 @@ def precompute(
 
             sum_w_ls_m_r_np = table_engine_r.get('sum w_ls m')
             sum_w_ls_1_minus_e_rms_sq_r_np = table_engine_r.get('sum w_ls (1 - e_rms^2)')
-            sum_w_ls_A_p_R_2_r_np = table_engine_r.get('sum w_ls A p(R_2=0.3)')
+            sum_w_ls_A_p_R_2_r_np = table_engine_r.get('sum w_ls p(R_2=0.3)')
             sum_w_ls_R_T_r_np = table_engine_r.get('sum w_ls R_T')
             sum_w_ls_c_r_np = table_engine_r.get('sum w_ls c')
             sum_w_ls_sigma_crit_c_r_np = table_engine_r.get('sum w_ls sigma_crit c')

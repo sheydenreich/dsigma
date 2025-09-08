@@ -841,7 +841,13 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
         cudaStream_t stream;
         CUDA_CHECK(cudaStreamCreate(&stream));
 
-        if (verbose) printf("GPU %d: Thread %d checking in.\n", gpu_id, omp_get_thread_num());
+        if (verbose) {
+            printf("GPU %d: Thread %d checking in.\n", gpu_id, omp_get_thread_num());
+            printf("GPU %d: Feature flags - has_c_s=%d, has_e_psf_s=%d, has_magA_s=%d\n", 
+                   gpu_id, tables->has_c_s, tables->has_e_psf_s, tables->has_magA_s);
+            printf("GPU %d: Pointers - c_1_s=%p, c_2_s=%p, e_psf_1_s=%p, e_psf_2_s=%p, magA_s=%p\n",
+                   gpu_id, tables->c_1_s, tables->c_2_s, tables->e_psf_1_s, tables->e_psf_2_s, tables->magA_s);
+        }
 
         // --- B. REPLICATE SHARED DATA ON THIS GPU ---
         double *d_z_s, *d_d_com_s, *d_sin_ra_s, *d_cos_ra_s, *d_sin_dec_s, *d_cos_dec_s, *d_w_s, *d_e_1_s, *d_e_2_s, *d_z_l_max_s;
@@ -859,9 +865,34 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
             CUDA_CHECK(cudaMalloc(&d_d_com_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_d_com_s, tables->d_com_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_sin_ra_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_sin_ra_s, tables->sin_ra_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_cos_ra_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_cos_ra_s, tables->cos_ra_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_sin_dec_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_sin_dec_s, tables->sin_dec_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_cos_dec_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_cos_dec_s, tables->cos_dec_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_w_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_w_s, tables->w_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_e_1_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_e_1_s, tables->e_1_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_e_2_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_e_2_s, tables->e_2_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_z_l_max_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_z_l_max_s, tables->z_l_max_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream));
             if (tables->has_sigma_crit_eff) { CUDA_CHECK(cudaMalloc(&d_sigma_crit_eff_l, (size_t)tables->n_lenses * tables->n_z_bins_l * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_sigma_crit_eff_l, tables->sigma_crit_eff_l, (size_t)tables->n_lenses * tables->n_z_bins_l * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_z_bin_s, tables->n_sources * sizeof(int))); CUDA_CHECK(cudaMemcpyAsync(d_z_bin_s, tables->z_bin_s, tables->n_sources * sizeof(int), cudaMemcpyHostToDevice, stream)); }
             if (tables->has_m_s) { CUDA_CHECK(cudaMalloc(&d_m_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_m_s, tables->m_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); } if (tables->has_e_rms_s) { CUDA_CHECK(cudaMalloc(&d_e_rms_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_e_rms_s, tables->e_rms_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); } if (tables->has_R_2_s) { CUDA_CHECK(cudaMalloc(&d_R_2_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_R_2_s, tables->R_2_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); } if (tables->has_R_matrix_s) { CUDA_CHECK(cudaMalloc(&d_R_11_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_R_11_s, tables->R_11_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_R_12_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_R_12_s, tables->R_12_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_R_21_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_R_21_s, tables->R_21_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_R_22_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_R_22_s, tables->R_22_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); }
-            if (tables->has_c_s) { CUDA_CHECK(cudaMalloc(&d_c_1_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_c_1_s, tables->c_1_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_c_2_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_c_2_s, tables->c_2_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); }
-            if (tables->has_e_psf_s) { CUDA_CHECK(cudaMalloc(&d_e_psf_1_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_e_psf_1_s, tables->e_psf_1_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); CUDA_CHECK(cudaMalloc(&d_e_psf_2_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_e_psf_2_s, tables->e_psf_2_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); }
-            if (tables->has_magA_s) { CUDA_CHECK(cudaMalloc(&d_magA_s, tables->n_sources * sizeof(double))); CUDA_CHECK(cudaMemcpyAsync(d_magA_s, tables->magA_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); }
+            if (tables->has_c_s) { 
+                if (tables->c_1_s == nullptr || tables->c_2_s == nullptr) {
+                    printf("ERROR GPU %d: has_c_s=true but c_1_s=%p, c_2_s=%p\n", gpu_id, tables->c_1_s, tables->c_2_s);
+                    exit(EXIT_FAILURE);
+                }
+                CUDA_CHECK(cudaMalloc(&d_c_1_s, tables->n_sources * sizeof(double))); 
+                CUDA_CHECK(cudaMemcpyAsync(d_c_1_s, tables->c_1_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); 
+                CUDA_CHECK(cudaMalloc(&d_c_2_s, tables->n_sources * sizeof(double))); 
+                CUDA_CHECK(cudaMemcpyAsync(d_c_2_s, tables->c_2_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); 
+            }
+            if (tables->has_e_psf_s) { 
+                if (tables->e_psf_1_s == nullptr || tables->e_psf_2_s == nullptr) {
+                    printf("ERROR GPU %d: has_e_psf_s=true but e_psf_1_s=%p, e_psf_2_s=%p\n", gpu_id, tables->e_psf_1_s, tables->e_psf_2_s);
+                    exit(EXIT_FAILURE);
+                }
+                CUDA_CHECK(cudaMalloc(&d_e_psf_1_s, tables->n_sources * sizeof(double))); 
+                CUDA_CHECK(cudaMemcpyAsync(d_e_psf_1_s, tables->e_psf_1_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); 
+                CUDA_CHECK(cudaMalloc(&d_e_psf_2_s, tables->n_sources * sizeof(double))); 
+                CUDA_CHECK(cudaMemcpyAsync(d_e_psf_2_s, tables->e_psf_2_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); 
+            }
+            if (tables->has_magA_s) { 
+                if (tables->magA_s == nullptr) {
+                    printf("ERROR GPU %d: has_magA_s=true but magA_s=%p\n", gpu_id, tables->magA_s);
+                    exit(EXIT_FAILURE);
+                }
+                CUDA_CHECK(cudaMalloc(&d_magA_s, tables->n_sources * sizeof(double))); 
+                CUDA_CHECK(cudaMemcpyAsync(d_magA_s, tables->magA_s, tables->n_sources * sizeof(double), cudaMemcpyHostToDevice, stream)); 
+            }
             CUDA_CHECK(cudaMalloc(&d_unique_source_hp_coords_kdtree, N_unique_source_hp * sizeof(float3))); CUDA_CHECK(cudaMemcpyAsync(d_unique_source_hp_coords_kdtree, h_unique_source_hp_coords_kdtree.data(), N_unique_source_hp * sizeof(float3), cudaMemcpyHostToDevice, stream));
             CUDA_CHECK(cudaMalloc(&d_unique_source_hp_ids, N_unique_source_hp * sizeof(long))); CUDA_CHECK(cudaMemcpyAsync(d_unique_source_hp_ids, h_unique_source_hp_ids.data(), N_unique_source_hp * sizeof(long), cudaMemcpyHostToDevice, stream));
             CUDA_CHECK(cudaMalloc(&d_kdtree_to_original_mapping, N_unique_source_hp * sizeof(int))); CUDA_CHECK(cudaMemcpyAsync(d_kdtree_to_original_mapping, h_kdtree_to_original_mapping.data(), N_unique_source_hp * sizeof(int), cudaMemcpyHostToDevice, stream));
