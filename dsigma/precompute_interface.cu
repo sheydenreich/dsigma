@@ -37,6 +37,26 @@
     } \
 }
 
+// Helper function to query GPU shared memory limit
+size_t get_gpu_shared_memory_limit(int device_id = 0) {
+    int previous_device;
+    CUDA_CHECK(cudaGetDevice(&previous_device));
+    
+    if (device_id != previous_device) {
+        CUDA_CHECK(cudaSetDevice(device_id));
+    }
+    
+    int shared_mem_per_block;
+    CUDA_CHECK(cudaDeviceGetAttribute(&shared_mem_per_block, cudaDevAttrMaxSharedMemoryPerBlock, device_id));
+    
+    if (device_id != previous_device) {
+        CUDA_CHECK(cudaSetDevice(previous_device));
+    }
+    
+    // Use 95% of available shared memory to be safe (similar to the original 47KB vs 48KB approach)
+    return static_cast<size_t>(shared_mem_per_block * 0.95);
+}
+
 // Custom data structures for KD-tree with index mapping
 struct PointWithIndex {
     float3 coord;
@@ -155,7 +175,7 @@ MaxKCheckResult check_max_k_requirements(
     double max_search_radius_sq,
     bool force_shared_memory
 ) {
-    const size_t SHARED_MEM_LIMIT = 47 * 1024; // 47KB to be safe
+    const size_t SHARED_MEM_LIMIT = get_gpu_shared_memory_limit(); // Query GPU for shared memory limit
     MaxKCheckResult result;
     
     long current_nside = initial_nside;
@@ -887,21 +907,13 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
                 
                 // Calculate shared memory requirements
                 // Note: max_k_for_this_gpu is the total workspace for the entire block, not per thread
-                size_t shared_mem_size = (tables->n_bins + 1) * sizeof(double) +  // Distance bins
-                                       max_k_for_this_gpu * sizeof(KnnCandidate) + // KD-tree workspace (shared by all threads)
-                                       max_k_for_this_gpu * sizeof(int); // Candidate indices
-                
-                if (verbose) printf("GPU %d: Shared memory size: %zu bytes (%.2f KB). Max per block: 48KB\n", 
-                       gpu_id, shared_mem_size, shared_mem_size / 1024.0);
-                
-                // Calculate required shared memory for optimized kernel
-                const size_t SHARED_MEM_LIMIT = 47 * 1024; // Use 47KB to be safe
+                const size_t SHARED_MEM_LIMIT = get_gpu_shared_memory_limit(gpu_id); // Query GPU for shared memory limit
                 size_t required_shared_mem = (tables->n_bins + 1) * sizeof(double) +  // Distance bins
                                            max_k_for_this_gpu * sizeof(KnnCandidate) + // KD-tree workspace
                                            max_k_for_this_gpu * sizeof(int); // Candidate indices
                 
-                if (verbose) printf("GPU %d: Required shared memory: %zu bytes (%.2f KB) for max_k=%d\n", 
-                       gpu_id, required_shared_mem, required_shared_mem / 1024.0, max_k_for_this_gpu);
+                if (verbose) printf("GPU %d: Required shared memory: %zu bytes (%.2f KB) for max_k=%d, GPU limit: %.2f KB\n", 
+                       gpu_id, required_shared_mem, required_shared_mem / 1024.0, max_k_for_this_gpu, SHARED_MEM_LIMIT / 1024.0);
                 
                 // Determine which kernel to use based on memory mode flags
                 bool use_shared_memory = false;
@@ -920,12 +932,12 @@ int precompute_cuda_interface(TableData* tables, int n_gpus_to_use, bool force_s
                     // Auto-determine based on whether it fits in shared memory
                     if (required_shared_mem <= SHARED_MEM_LIMIT) {
                         use_shared_memory = true;
-                        if (verbose) printf("GPU %d: Auto-selected shared memory kernel: %zu bytes (%.2f KB)\n", 
-                               gpu_id, required_shared_mem, required_shared_mem / 1024.0);
+                        if (verbose) printf("GPU %d: Auto-selected shared memory kernel: %zu bytes (%.2f KB) within limit %.2f KB\n", 
+                               gpu_id, required_shared_mem, required_shared_mem / 1024.0, SHARED_MEM_LIMIT / 1024.0);
                     } else {
                         use_global_memory = true;
-                        if (verbose) printf("GPU %d: Auto-selected global memory kernel (shared memory %zu bytes exceeds limit %zu bytes)\n", 
-                               gpu_id, required_shared_mem, SHARED_MEM_LIMIT);
+                        if (verbose) printf("GPU %d: Auto-selected global memory kernel (shared memory %.2f KB exceeds limit %.2f KB)\n", 
+                               gpu_id, required_shared_mem / 1024.0, SHARED_MEM_LIMIT / 1024.0);
                     }
                 }
                 
