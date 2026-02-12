@@ -281,7 +281,7 @@ __device__ void process_found_source_hp_pixel(int source_kdtree_idx, KernelCallb
         int original_source_idx = cb_data->g_sorted_source_original_indices[i_s_mapped_idx];
         double zs_i = cb_data->g_z_s[original_source_idx];
         
-        if (cb_data->g_z_l_batch[cb_data->lens_idx_batch] >= zs_i || cb_data->g_z_l_batch[cb_data->lens_idx_batch] >= cb_data->g_z_l_max_s[original_source_idx]) {
+        if (cb_data->g_z_l_batch[cb_data->lens_idx_batch] > cb_data->g_z_l_max_s[original_source_idx]) {
             continue;
         }
         
@@ -302,7 +302,8 @@ __device__ void process_found_source_hp_pixel(int source_kdtree_idx, KernelCallb
             cb_data->lens_idx_global, cb_data->n_z_bins_l,
             (cb_data->has_sigma_crit_eff && cb_data->g_z_bin_s != nullptr) ? cb_data->g_z_bin_s[original_source_idx] : -1
         );
-        if (sigma_crit_inv == 0.0 || sigma_crit_inv == DBL_MAX) continue;
+        if (sigma_crit_inv == DBL_MAX) continue;
+        if (sigma_crit_inv == 0.0 && cb_data->weighting < 0) continue;
         
         double w_ls = calculate_w_ls_gpu(sigma_crit_inv, cb_data->g_w_s[original_source_idx], cb_data->weighting);
         if (w_ls == 0.0) continue;
@@ -467,8 +468,8 @@ __device__ void process_found_source_hp_pixel_shared(
         // Load source redshift for early exit check
         double zs_i = cb_data->g_z_s[original_source_idx];
         
-        // Redshift filter: source must be behind the lens
-        if (shared_lens->z_l >= zs_i || shared_lens->z_l >= cb_data->g_z_l_max_s[original_source_idx]) {
+        // Redshift filter: lens redshift must not exceed z_l_max for this source
+        if (shared_lens->z_l > cb_data->g_z_l_max_s[original_source_idx]) {
             continue;
         }
         
@@ -494,7 +495,10 @@ __device__ void process_found_source_hp_pixel_shared(
             shared_lens->lens_idx_global, cb_data->n_z_bins_l,
             (cb_data->has_sigma_crit_eff && cb_data->g_z_bin_s != nullptr) ? cb_data->g_z_bin_s[original_source_idx] : -1
         );
-        if (sigma_crit_inv == 0.0 || sigma_crit_inv == DBL_MAX) {
+        if (sigma_crit_inv == DBL_MAX) {
+            continue;
+        }
+        if (sigma_crit_inv == 0.0 && cb_data->weighting < 0) {
             continue;
         }
         

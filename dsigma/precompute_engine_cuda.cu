@@ -105,8 +105,6 @@ __device__ double calculate_sigma_crit_inv_gpu(
     int n_z_bins_l,            // Number of redshift bins for lens in sigma_crit_eff table
     int z_bin_s_val            // Source's redshift bin for sigma_crit_eff table
 ) {
-    if (zl_i >= zs_i) return 0.0; // Lens not in front of source, so SigmaCrit is infinite, inverse is 0.
-
     double sigma_crit_val;
     if (has_sigma_crit_eff) {
         if (g_sigma_crit_eff_l != nullptr && z_bin_s_val >= 0 && z_bin_s_val < n_z_bins_l) {
@@ -116,12 +114,9 @@ __device__ double calculate_sigma_crit_inv_gpu(
             return 0.0; // Error or invalid input, treat as infinite SigmaCrit
         }
     } else {
-        // Standard calculation
-        if (dcoml_i >= dcoms_i && dcoms_i > 0) { // dcoms_i > 0 ensures not at observer
-             // Lens behind or at same comoving distance as source.
-             // (But zl_i < zs_i already checked, so this implies non-standard distance-redshift relation)
-             // Or, more likely, dcoml_i, dcoms_i are such that D_LS would be <=0
-            return 0.0; // SigmaCrit infinite
+        // Standard calculation: check if lens is in front of source
+        if (dcoml_i >= dcoms_i) {
+            return 0.0; // SigmaCrit infinite (lens behind or at same comoving distance as source)
         }
         if (dcoml_i <= 0 || dcoms_i <= 0) return 0.0; // Invalid distances
 
@@ -158,18 +153,19 @@ __device__ double calculate_w_ls_gpu(
     double w_s_i,
     int weighting_type // (0: w_s, -2: w_s * SigmaCrit_inv^2, other: w_s * (1/SigmaCrit_inv)^weighting_type)
 ) {
+    if (weighting_type == 0) { // weight_type 0 means w_s
+        return w_s_i;
+    }
+
     if (sigma_crit_inv == DBL_MAX) { // sigma_crit was 0
-        if (weighting_type == 0) return w_s_i;
-        else return 0.0; // Any power of 0 is 0, unless 0^0 (undefined) or negative power (inf)
+        return 0.0; // Any power of 0 is 0, unless 0^0 (undefined) or negative power (inf)
                          // For lensing, if sigma_crit is 0, w_ls is typically 0 or undefined.
     }
     if (sigma_crit_inv == 0.0) { // sigma_crit was infinite
-         return 0.0; // w_ls is 0 if sigma_crit is infinite and weighting is applied
+        return 0.0;
     }
 
-    if (weighting_type == 0) { // weight_type 0 means w_s
-        return w_s_i;
-    } else if (weighting_type == -2) { // weight_type -2 means w_s * SigmaCrit_inv^2
+    if (weighting_type == -2) { // weight_type -2 means w_s * SigmaCrit_inv^2
         return w_s_i * sigma_crit_inv * sigma_crit_inv;
     } else {
         // General case: w_s * SigmaCrit^weighting_type = w_s * (1/SigmaCrit_inv)^weighting_type
