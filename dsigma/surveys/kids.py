@@ -6,8 +6,8 @@ __all__ = ['default_version', 'known_versions', 'e_2_convention',
            'default_column_keys', 'tomographic_redshift_bin',
            'multiplicative_shear_bias']
 
-default_version = 'DR4'
-known_versions = ['DR3', 'KV450', 'DR4']
+default_version = 'DR5'
+known_versions = ['DR3', 'KV450', 'DR4', 'DR5']
 e_2_convention = 'standard'
 
 
@@ -58,6 +58,15 @@ def default_column_keys(version=default_version):
             'e_1': 'e1',
             'e_2': 'e2',
             'w': 'weight'}
+    elif version == 'DR5':
+        keys = {
+            'ra': 'ALPHA_J2000',
+            'dec': 'DELTA_J2000',
+            'z': 'Z_B',
+            'z_low': 'Z_B_MIN',
+            'e_1': 'e1',
+            'e_2': 'e2',
+            'w': 'weight'}
     else:
         raise ValueError(
             "Unkown version of KiDS. Supported versions are {}.".format(
@@ -83,10 +92,18 @@ def tomographic_redshift_bin(z_s, version=default_version):
         redshift. Returns -1 in case a redshift does not fall into any bin.
 
     """
-    z_bin = np.digitize(z_s, np.array(
-        [0.1, 0.3, 0.5, 0.7, 0.9, 1.2]) + 1e-6, right=True) - 1
-    z_bin = np.where((z_s < 0.1) | (z_s >= 1.2), -1, z_bin)
-
+    if version == 'DR4':
+        z_bin = np.digitize(z_s, np.array(
+            [0.1, 0.3, 0.5, 0.7, 0.9, 1.2]) + 1e-6, right=True) - 1
+        z_bin = np.where((z_s < 0.1) | (z_s >= 1.2), -1, z_bin)
+    elif version == 'DR5':
+        z_bin = np.digitize(z_s, np.array(
+            [0.1, 0.42, 0.58, 0.71, 0.90, 1.14, 2.0]) + 1e-6, right=True) - 1
+        z_bin = np.where((z_s < 0.1) | (z_s >= 2.0), -1, z_bin)
+    else:
+        raise NotImplementedError(
+            "Tomographic redshift bins are not defined for version {}.".format(
+                version))
     return z_bin
 
 
@@ -123,12 +140,14 @@ def multiplicative_shear_bias(z_bin, version=default_version):
         raise ValueError('For DR3, the multiplicative shear bias is ' +
                          'defined for each object individually.')
 
-    elif version in ['KV450', 'DR4']:
+    elif version in ['KV450', 'DR4', 'DR5']:
 
         if version == 'KV450':
             m = np.array([-0.017, -0.008, -0.015, 0.010, 0.006])
-        else:
+        elif version == 'DR4':
             m = np.array([-0.009, -0.011, -0.015, 0.002, 0.007])
+        elif version == 'DR5':
+            m = np.array([-0.023, -0.016, -0.011, 0.020, 0.030, 0.045])
 
         return np.where(z_bin != -1, m[z_bin], np.nan)
 
